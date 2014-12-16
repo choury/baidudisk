@@ -7,9 +7,13 @@ a client for baidudisk for linux
 要想编译这个项目，你需要：
 
 以下工具
+
 cmake
+
 make
+
 gcc, g++(需支持c++11)
+
 
 并且安装以下软件包:
 libcurl4 libcurl4-openssl libjson libfuse2 libssl 和相应的dev包（如果有）
@@ -30,7 +34,9 @@ libcurl4 libcurl4-openssl libjson libfuse2 libssl 和相应的dev包（如果有
 
 怎么编译：
 cmake .
+
 make
+
 
 如果没有错误，当前目录下面会生成一个名为baidudisk的可执行文件
 
