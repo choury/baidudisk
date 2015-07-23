@@ -1742,6 +1742,15 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
         }
 
         if (ret + offset > f->lengh) {      //文件长度被扩展
+            int oc = GetWriteBlkNo(f->lengh); //原来的块数
+            int nc = GetWriteBlkNo(offset);   //扩展后的块数
+            
+            for(int i=oc; i< nc; ++i){ //nc已经置过位了
+                SETD(f->cache.w.flags, i);
+                if (GETT(f->cache.w.flags, i)) {
+                    SETR(f->cache.w.flags, i);
+                }
+            }
             f->lengh = ret + offset;
         }
 
@@ -1749,7 +1758,9 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
             int tmp = baiduapi_write(path, buf + len, size - len, offset + len, fi);
             if (tmp < 0) {                  //调用出错
                 return tmp;
-            } else ret += tmp;
+            } else {
+                ret += tmp;
+            }
         }
 
         return ret;
@@ -1759,16 +1770,48 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
     return -errno;
 }
 
+//截断一个文件，只能截断读缓存中的文件，因为只有这种文件是可写的
+int baiduapi_truncate(const char * path, off_t offset) {
+    filedec *f = getfcache(path);
+
+    if (f) {
+        if ((f->flags & DELETE) || (f->type == forread)) {
+            pthread_mutex_unlock(&f->lock);
+            return -EACCES;
+        }
+        
+        f->flags &= ~SYNCED;
+        if (f->flags & TRANSF) {
+            f->flags |= REOPEN;
+        }
+        if (offset > f->lengh) {      //文件长度被扩展
+            int oc = GetWriteBlkNo(f->lengh); //原来的块数
+            int nc = GetWriteBlkNo(offset);   //扩展后的块数
+            
+            for(int i=oc; i<=nc; ++i){
+                SETD(f->cache.w.flags, i);
+                if (GETT(f->cache.w.flags, i)) {
+                    SETR(f->cache.w.flags, i);
+                }
+            }
+        }else{
+            int ret = ftruncate(f->file, offset);
+            if(ret) {
+                pthread_mutex_unlock(&f->lock);
+                return ret;
+            }
+            
+        }
+        f->lengh = offset;
+        pthread_mutex_unlock(&f->lock);
+        return 0;
+    }
+    return -EACCES;
+}
 
 
-int baiduapi_access(const char *path, int mask)
+int baiduapi_stub(const char *path)
 {
     return 0;
 }
-
-int baiduapi_utimens(const char *path, const struct timespec ts[2])
-{
-    return 0;
-}
-
 

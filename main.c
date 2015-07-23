@@ -26,9 +26,10 @@ struct fuse_operations baiduapi_oper = {
     .create     = baiduapi_create,
     .write      = baiduapi_write,
     .release    = baiduapi_release,
-    .access     = baiduapi_access,
-    .utimens    = baiduapi_utimens,
+    .truncate   = baiduapi_truncate,
     .fsync      = baiduapi_fsync,
+    .access     = baiduapi_stub,
+    .utimens    = baiduapi_stub,
 };
 
 

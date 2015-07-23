@@ -40,8 +40,8 @@ int baiduapi_rmdir(const char *path);
 int baiduapi_link(const char *target,const char *lnname);
 int baiduapi_rename(const char * oldname,const char *newname);
 int baiduapi_fsync (const char *path, int flag, struct fuse_file_info *fi);
-int baiduapi_access (const char *path, int mask);
-int baiduapi_utimens(const char *path, const struct timespec ts[2]);
+int baiduapi_truncate(const char * path, off_t offset);
+int baiduapi_stub(const char *path);
 
 int baiduapi_uploadfile (int file,const char * path);
 int baiduapi_uploadtmpfile(int file,char *md5);
