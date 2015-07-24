@@ -55,7 +55,8 @@ typedef struct{
     }cache;
     size_t lengh;
     size_t count;
-    time_t rlstime;
+    time_t ctime;
+    time_t mtime;
     
 #define SYNCED         1                        //是否已同步
 #define TRANSF         2                        //是否正在同步

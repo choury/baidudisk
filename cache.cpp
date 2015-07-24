@@ -158,7 +158,7 @@ void fcachesync(filedec *f)
             f->flags &= ~REOPEN;
         } else {
             f->flags |= SYNCED;
-            time(&f->rlstime);
+            time(&f->mtime);
         }
         break;
     case filedec::forwrite:
@@ -169,7 +169,7 @@ void fcachesync(filedec *f)
                 while (baiduapi_uploadfile(f->file, f->path));
                 CLRD(f->cache.w.flags, 0);
                 f->flags |= SYNCED;
-                time(&f->rlstime);
+                time(&f->mtime);
             } else if (f->flags & REOPEN) {
                 f->flags &= ~REOPEN;
             } else {
@@ -183,7 +183,7 @@ void fcachesync(filedec *f)
             if ((f->flags & DELETE) == 0 && (f->flags & REOPEN) == 0) {
                 while (baiduapi_mergertmpfile(f->path, f));
                 f->flags |= SYNCED;
-                time(&f->rlstime);
+                time(&f->mtime);
             } else if (f->flags & REOPEN) {
                 f->flags &= ~REOPEN;
             } else {

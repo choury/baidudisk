@@ -329,7 +329,7 @@ void handlefcache(filedec *f)
             }
         } else if ((f->flags & SYNCED) &&
                    (f->flags & DELETE) == 0 &&
-                   time(NULL) - f->rlstime > 60 * 10) {          //同步结束时间超过10分种
+                   time(NULL) - f->mtime > 60 * 10) {                 //同步结束时间超过10分种
             f->flags |= DELETE;
             f->flags |= ONDELE;
             addtask((taskfunc)freefcache, f, 0);                             //释放它
@@ -569,6 +569,8 @@ int baiduapi_getattr(const char *path, struct stat *st)
         } else {
             st->st_size = f->lengh;
             st->st_mode = S_IFREG | 0444;
+            st->st_ctim.tv_sec = f->ctime;
+            st->st_mtim.tv_sec = f->mtime;
             pthread_mutex_unlock(&f->lock);
             return 0;
         }
@@ -1287,7 +1289,8 @@ int baiduapi_open(const char *path, struct fuse_file_info *fi)
         f->type = forread;
         f->count = 1;
         f->lengh = t.st_size;
-
+        f->ctime = t.st_ctim.tv_sec;
+        f->mtime = t.st_mtim.tv_sec;
         fi->fh = (uint64_t) f;
         return 0;
     }
@@ -1623,6 +1626,7 @@ int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
     f->type = forwrite;
     f->count = 1;
+    f->ctime = time(NULL);
     SETD(f->cache.w.flags, 0);
 
     fi->fh = (uint64_t) f;
