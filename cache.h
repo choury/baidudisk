@@ -29,18 +29,22 @@ typedef struct{
     char md5[WBC][35];
     task_t taskid[WBC];
     
-//每一个block有4位标志位：bit0(D):是否为脏块，bit1(T):是否正在同步,bit2(R):同步时是否被写,bit3:保留
+//每一个block有4位标志位：bit0(D):是否为脏块,bit1(R):同步时是否被写,bit2(Z):全0块（空洞），bit3:保留
     unsigned int flags[WBC/8+1];
-#define SETD(flags,b)  (flags[(b)>>3] |= (1<<(((b)%8)<<2)))
+//设置D位会同时清除Z位
+#define SETD(flags,b)  do{\
+                           (flags[(b)>>3] |= (1<<(((b)%8)<<2)));\
+                           (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+2)));\
+                       }while(0)
 #define CLRD(flags,b)  (flags[(b)>>3] &= ~(1<<(((b)%8)<<2)))
 #define GETD(flags,b)  (flags[(b)>>3] & (1<<(((b)%8)<<2)))
-#define SETT(flags,b)  (flags[(b)>>3] |= (1<<((((b)%8)<<2)+1)))
-#define CLRT(flags,b)  (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+1)))
-#define GETT(flags,b)  (flags[(b)>>3] & (1<<((((b)%8)<<2)+1)))
-#define SETR(flags,b)  (flags[(b)>>3] |= (1<<((((b)%8)<<2)+2)))
-#define CLRR(flags,b)  (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+2)))
+#define SETR(flags,b)  (flags[(b)>>3] |= (1<<((((b)%8)<<2)+1)))
+#define CLRR(flags,b)  (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+1)))
 #define GETR(flags,b)  (flags[(b)>>3] & (1<<((((b)%8)<<2)+2)))
-
+#define SETZ(flags,b)  (flags[(b)>>3] |= (1<<((((b)%8)<<2)+2)))
+#define CLRZ(flags,b)  (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+2)))
+#define GETZ(flags,b)  (flags[(b)>>3] & (1<<((((b)%8)<<2)+2)))
+#define CLRA(flags,b)  (flags[(b)>>3] &= ~(0xf<<(((b)%8)<<2)))
 }wfcache;
 
 
@@ -61,8 +65,9 @@ typedef struct{
 #define SYNCED         1                        //是否已同步
 #define TRANSF         2                        //是否正在同步
 #define DELETE         4                        //是否被标记删除
-#define REOPEN         8                        //是否同步时被重新打开过
-#define ONDELE        16                        //正在被删除
+#define RELEASE        8                        //是否被标记释放
+#define REOPEN        16                        //是否同步时被重新打开过
+#define ONDELE        32                        //正在被删除或者释放
     volatile unsigned char flags;
 }filedec;
 
@@ -82,7 +87,6 @@ void addfcache(filedec *f);
 void addscache(const char* path,struct stat st);
 filedec *getfcache(const char *path);
 struct stat *getscache(const char *path);
-void rmfcache(const char *path);
 void rmscache(const char *path);
 void clearscache();
 void renamecache(const char *oldname,const char *newname);

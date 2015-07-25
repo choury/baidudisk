@@ -27,7 +27,7 @@ static int inline isindir(const char *dirpath, const char *path)
     size_t len = strlen(dirpath);
     if (dirpath[len - 1] == '/') {
         --len;
-    };
+    }
 
     for (i = strlen(path) - 1; (i >= 0) && (path[i] != '/'); --i);          //找到它的直接父目录
 
@@ -150,30 +150,23 @@ void fcachesync(filedec *f)
         for (size_t i = 0; i <= GetWriteBlkNo(f->lengh); ++i) {
             if (f->cache.r.taskid[i]) {
                 waittask(f->cache.r.taskid[i]);
-                f->cache.r.taskid[i] = 0;
             }
         }
         pthread_mutex_lock(&f->lock);
-        if (f->flags & REOPEN) {
-            f->flags &= ~REOPEN;
-        } else {
+        if ((f->flags & REOPEN) == 0) {
             f->flags |= SYNCED;
             time(&f->mtime);
         }
         break;
     case filedec::forwrite:
         waittask(f->cache.w.taskid[0]);
-        if (f->lengh < LWBS && GETD(f->cache.w.flags, 0)) {                      //小文件，即只有一个block，直接上传
+        if (f->lengh < LWBS){
             pthread_mutex_lock(&f->lock);
             if ((f->flags & DELETE) == 0 && (f->flags & REOPEN) == 0) {
                 while (baiduapi_uploadfile(f->file, f->path));
                 CLRD(f->cache.w.flags, 0);
                 f->flags |= SYNCED;
                 time(&f->mtime);
-            } else if (f->flags & REOPEN) {
-                f->flags &= ~REOPEN;
-            } else {
-                f->flags |= SYNCED;
             }
         } else {
             struct fuse_file_info fi;
@@ -184,15 +177,12 @@ void fcachesync(filedec *f)
                 while (baiduapi_mergertmpfile(f->path, f));
                 f->flags |= SYNCED;
                 time(&f->mtime);
-            } else if (f->flags & REOPEN) {
-                f->flags &= ~REOPEN;
-            } else {
-                f->flags |= SYNCED;
             }
         }
         break;
     }
     f->flags &= ~TRANSF;
+    f->flags &= ~REOPEN;
     pthread_mutex_unlock(&f->lock);
 }
 
@@ -202,28 +192,28 @@ void fcachesync(filedec *f)
 /* 释放filedec结构体，并从缓存中删除，必须没有被打开，
  * 且没有在同步，即TRANSF标志未置位
  * 否则直接取消ONDELE标志并返回，什么都不干
- * 调用时如果该文件未同步就调用fsync_real先同步
+ * 调用时如果该文件未同步并且是到期释放的就调用fcachesync先同步
  * 成功返回0
  */
 int freefcache(filedec *f)
 {
-    if (pthread_mutex_trylock(&f->lock) == 0) {
-        if (f->count == 0 &&
-                (f->flags & TRANSF) == 0) {
-            rmfcache(f->path);
-            f->flags |= DELETE;
-            if ((f->flags & (SYNCED | TRANSF)) == 0) {
-                fcachesync(f);
-            }
-            pthread_mutex_destroy(&f->lock);
-            close(f->file);
-            delete f;
-            return 0;
-        } else {
-            f->flags &= ~ONDELE;
+    pthread_mutex_lock(&flock);
+    pthread_mutex_lock(&f->lock);
+    if (f->count == 0 && (f->flags & TRANSF) == 0) {
+        filecache.erase(f->path);
+        if ((f->flags & RELEASE) && (f->flags & SYNCED) == 0) {
+            fcachesync(f);
         }
-        pthread_mutex_unlock(&f->lock);
+        pthread_mutex_destroy(&f->lock);
+        close(f->file);
+        delete f;
+        pthread_mutex_unlock(&flock);
+        return 0;
+    } else {
+        f->flags &= ~ONDELE;
     }
+    pthread_mutex_unlock(&f->lock);
+    pthread_mutex_unlock(&flock);
     return 1;
 }
 
@@ -236,12 +226,16 @@ void addfcache(filedec *f)
     if (filecache.size() > 500) {
         for (auto i : filecache) {
             filedec *tf = i.second;
-            if ((tf->flags & SYNCED) &&
-                    (tf->flags & DELETE) == 0) {          //随机删除一个
-                if(freefcache(tf)==0)
+            if(pthread_mutex_trylock(&tf->lock) == 0){
+                if ((f != tf) && 
+                    (tf->flags == SYNCED) &&
+                    (tf->count == 0)) 
+                {          //随机删除一个
+                    tf->flags |= RELEASE;
+                    pthread_mutex_unlock(&tf->lock);
                     break;
-                else
-                    continue;
+                }
+                pthread_mutex_unlock(&tf->lock);
             }
         }
     }
@@ -282,13 +276,6 @@ struct stat *getscache(const char *path)
     }
     pthread_mutex_unlock(&slock);
     return st;
-}
-
-void rmfcache(const char *path)
-{
-    pthread_mutex_lock(&flock);
-    filecache.erase(path);
-    pthread_mutex_unlock(&flock);
 }
 
 void rmscache(const char *path)
@@ -333,10 +320,17 @@ void filldir(const char *path, void *buf, fuse_fill_dir_t filler)
         if (f->type == filedec::forwrite &&
                 (f->flags & SYNCED) == 0 &&
                 (f->flags & DELETE) == 0 &&
-                isindir(path, f->path)) {
+                isindir(path, f->path))
+        {
             st.st_size = f->lengh;
             st.st_mode = S_IFREG | 0444;
-            filler(buf, f->path + strlen(path), &st, 0);
+            st.st_ctim.tv_sec = f->ctime;
+            st.st_mtim.tv_sec = f->mtime;
+            int len = strlen(path);
+            if (path[len - 1] != '/'){
+                len++;
+            }
+            filler(buf, f->path + len, &st, 0);
         }
     }
     pthread_mutex_unlock(&flock);

@@ -18,7 +18,7 @@ typedef struct node{
     task_t taskid;
     taskfunc task;
     void *param;
-    uint flags;
+    unsigned int flags;
     pthread_mutex_t lock;
     struct node *next;
 }tasknode;
@@ -50,6 +50,7 @@ void creatpool(int threadnum);                          //创建线程池，参�
 #define WAIT        2
 task_t addtask( taskfunc task, void *param ,uint flags);
 void* waittask(task_t id);                              //等待并取回结果，必须对每个needretval=1的任务执行，不然会导致类似"僵尸进程"的东西
+int taskisdoing(task_t id);         //这是一个非阻塞接口，用来查询某任务是否在队列或者被执行
 
 #ifdef  __cplusplus
 }

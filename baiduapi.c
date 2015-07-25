@@ -147,7 +147,7 @@ typedef struct {
 
 
 //从服务器读一个block
-int readblock(block *tb)
+void readblock(block *tb)
 {
     block b = *tb;
     free(tb);
@@ -168,9 +168,8 @@ int readblock(block *tb)
     Http *r = Httpinit(buff);
 
     if (r == NULL) {
-        int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        return -lasterrno;
+        goto ret;
     }
 
     r->method = get;
@@ -181,7 +180,7 @@ int readblock(block *tb)
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
         Httpdestroy(r);
-        return -EPROTO;
+        goto ret;
     }
 
     Httpdestroy(r);
@@ -190,15 +189,18 @@ int readblock(block *tb)
     write(b.fd->file,bs.buf, bs.offset);
     b.fd->cache.r.mask[b.bno / 32] |= 1 << (b.bno % 32);
     pthread_mutex_unlock(&b.fd->lock);
-    return bs.offset;
+    return;
+ret:
+    pthread_mutex_lock(&b.fd->lock);
+    b.fd->cache.r.taskid[b.bno] = 0;
+    pthread_mutex_unlock(&b.fd->lock);
 }
 
 //上传一个block作为tmpfile
-int uploadblock(block *tb)
+void uploadblock(block *tb)
 {
     block b = *tb;
     free(tb);
-    size_t startp = GetWriteBlkStartPoint(b.bno);
     char buff[1024];
     snprintf(buff, sizeof(buff) - 1,
              "https://c.pcs.baidu.com/rest/2.0/pcs/file?"
@@ -210,25 +212,21 @@ int uploadblock(block *tb)
     Http *r = Httpinit(buff);
 
     if (r == NULL) {
-        int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        CLRT(b.fd->cache.w.flags, b.bno);
-        return -lasterrno;
+        goto ret;
     }
 
     FILE *tpfile = tmpfile();
     if (!tpfile) {
-        int lasterrno = errno;
         errorlog("create temp file error:%s\n", strerror(errno));
-        CLRT(b.fd->cache.w.flags, b.bno);
-        return -lasterrno;
+        goto ret;
     }
 
     char *buf = (char *)malloc(GetWriteBlkSize(b.bno));
     buffstruct bs = {0, GetWriteBlkSize(b.bno), buf};
     pthread_mutex_lock(&b.fd->lock);
-    lseek(b.fd->file, startp, SEEK_SET);
-    bs.len = read(b.fd->file,bs.buf, bs.len);
+    lseek(b.fd->file, GetWriteBlkStartPoint(b.bno), SEEK_SET);
+    bs.len = read(b.fd->file, bs.buf, bs.len);
     CLRR(b.fd->cache.w.flags, b.bno);
     pthread_mutex_unlock(&b.fd->lock);
 
@@ -244,8 +242,7 @@ int uploadblock(block *tb)
         free(buf);
         Httpdestroy(r);
         fclose(tpfile);
-        CLRT(b.fd->cache.w.flags, b.bno);
-        return -EPROTO;
+        goto ret;
     }
     free(buf);
     Httpdestroy(r);
@@ -255,39 +252,41 @@ int uploadblock(block *tb)
 
     if (json_get == NULL) {
         errorlog("json_object_from_FILE filed!\n");
-        CLRT(b.fd->cache.w.flags, b.bno);
-        return -EPROTO;
+        goto ret;
     }
 
     json_object *jerror_code;
-    if (json_object_object_get_ex(json_get, "error_code",&jerror_code)) {
-        int errorno = json_object_get_int(jerror_code) ;
+    if (json_object_object_get_ex(json_get, "error_code", &jerror_code)) {
+        json_object *jerror_msg;
+        json_object_object_get_ex(json_get, "error_msg", &jerror_msg);
+        errorlog("api error:%s\n", json_object_get_string(jerror_msg));
         json_object_put(json_get);
-        CLRT(b.fd->cache.w.flags, b.bno);
-        return handleerror(errorno);
+        goto ret;
     }
 
     json_object *jmd5;
     if (json_object_object_get_ex(json_get, "md5",&jmd5)) {
-        if (b.bno) {
-            sem_post(&wcache);
-        }
         pthread_mutex_lock(&b.fd->lock);
         if (GETR(b.fd->cache.w.flags, b.bno)) {
             CLRR(b.fd->cache.w.flags, b.bno);
         } else {
             strcpy(b.fd->cache.w.md5[b.bno], json_object_get_string(jmd5));
             CLRD(b.fd->cache.w.flags, b.bno);
+            CLRZ(b.fd->cache.w.flags, b.bno);
+            if (b.bno)
+                sem_post(&wcache);
         }
-        CLRT(b.fd->cache.w.flags, b.bno);
+        b.fd->cache.w.taskid[b.bno] = 0;
         pthread_mutex_unlock(&b.fd->lock);
         json_object_put(json_get);
-        return bs.offset;
+        return;
     } else {
         errorlog("Did not get MD5:%s\n", json_object_to_json_string(json_get));
-        CLRT(b.fd->cache.w.flags, b.bno);
-        return -EPROTO;
     }
+ret:
+    pthread_mutex_lock(&b.fd->lock);
+    b.fd->cache.w.taskid[b.bno] = 0;
+    pthread_mutex_unlock(&b.fd->lock);
 }
 
 /* 遍历fcache的处理函数
@@ -311,32 +310,32 @@ void handlefcache(filedec *f)
                     break;
                 case forwrite:
                     for (i = 0; i < GetWriteBlkNo(f->lengh); ++i) {
-                        if (f->cache.w.taskid[i]) {
-                            if (GETT(f->cache.w.flags, i) == 0) {
-                                waittask(f->cache.w.taskid[i]);                               //如果传送已经结束了就取回结果
-                                f->cache.w.taskid[i] = 0;
-                            }
-                        } else if (GETD(f->cache.w.flags, i)) {              //如果这个block是脏的那么加个上传任务
+                        if (f->cache.w.taskid[i] == 0 &&
+                            GETD(f->cache.w.flags, i))              //如果这个block是脏的那么加个上传任务
+                        {
                             block *b = (block *)malloc(sizeof(block));
                             b->bno = i;
                             b->fd = f;
-                            SETT(f->cache.w.flags, i);
-                            f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 1);
+                            f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 0);
                         }
                     }
                     break;
                 }
             }
-        } else if ((f->flags & SYNCED) &&
-                   (f->flags & DELETE) == 0 &&
-                   time(NULL) - f->mtime > 60 * 10) {                 //同步结束时间超过10分种
-            f->flags |= DELETE;
-            f->flags |= ONDELE;
-            addtask((taskfunc)freefcache, f, 0);                             //释放它
-        } else if ((f->flags & DELETE) &&
-                   (f->flags & ONDELE) == 0) {                        //删除被标记删除的项
-            f->flags |= ONDELE;
-            addtask((taskfunc)freefcache, f, 0);
+        } else if (f->count == 0) {
+            if((f->flags & SYNCED) &&
+               (f->flags & DELETE) == 0 &&
+               (time(NULL) - f->mtime > 60 * 10))                 //同步结束时间超过10分种
+            {
+                f->flags |= RELEASE;
+                f->flags |= ONDELE;
+                addtask((taskfunc)freefcache, f, 0);                             //释放它
+            }else if ((f->flags & (DELETE | RELEASE))&&
+                (f->flags & ONDELE) == 0)                      //删除被标记删除的项
+            {
+                f->flags |= ONDELE;
+                addtask((taskfunc)freefcache, f, 0);
+            }
         }
         pthread_mutex_unlock(&f->lock);
     }
@@ -560,6 +559,12 @@ void *baiduapi_init(struct fuse_conn_info *conn)
 //获得文件属性……
 int baiduapi_getattr(const char *path, struct stat *st)
 {
+    st->st_nlink = 1;
+    if (strcmp(path, "/") == 0) {                   //根目录，直接返回，都根目录了，你还查什么查啊，还一直查，说你呢，fuse
+        st->st_mode = S_IFDIR | 0755;
+        return 0;
+    }
+    
     filedec *f = getfcache(path);
 
     if (f) {
@@ -585,13 +590,7 @@ int baiduapi_getattr(const char *path, struct stat *st)
     json_object *json_get = 0, *filenode;
     char fullpath[PATHLEN];
     memset(st, 0, sizeof(struct stat));
-    st->st_nlink = 1;
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
-
-    if (strcmp(path, "/") == 0) {                   //根目录，直接返回，都根目录了，你还查什么查啊，还一直查，说你呢，fuse
-        st->st_mode = S_IFDIR | 0755;
-        return 0;
-    }
 
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -1161,22 +1160,12 @@ int baiduapi_rename(const char *oldname, const char *newname)
     filedec *f = getfcache(oldname);
 
     if (f) {
-        if (f->count != 0) {                                      //如果有没被关闭则不能改名
-            pthread_mutex_unlock(&f->lock);
-            return -EBUSY;
-        }
-        if (f->type == forwrite && f->flags == 0) {               //在本地还没有同步，只需要改本地缓存
-            renamecache(oldname, newname);
+        renamecache(oldname, newname);
+        if(f->type == forwrite && (f->flags & SYNCED) == 0) {
             pthread_mutex_unlock(&f->lock);
             return 0;
-        } else if ((f->type == forread) ||                         //读缓存可以直接改
-                   (f->type == forwrite && (f->flags & SYNCED))) { //已经同步到服务器，本地缓存和服务器都要改
-            renamecache(oldname, newname);
-            pthread_mutex_unlock(&f->lock);
-        } else {
-            pthread_mutex_unlock(&f->lock);
-            return -EBUSY;
         }
+        pthread_mutex_unlock(&f->lock);
     }
 
 
@@ -1342,20 +1331,16 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
                 block *b = (block *) malloc(sizeof(block));
                 b->fd = f;
                 b->bno = p;
-                f->cache.r.taskid[p] = addtask((taskfunc) readblock, b, 1);
+                f->cache.r.taskid[p] = addtask((taskfunc) readblock, b, 0);
                 f->flags &= ~SYNCED;
             }
         }
         pthread_mutex_unlock(&f->lock);
-        ret = (long) waittask(f->cache.r.taskid[c]);
-        f->cache.r.taskid[c] = 0;
-        if (ret < 0) {                                     //读取出错
-            return ret;
-        }
+        waittask(f->cache.r.taskid[c]);
         pthread_mutex_lock(&f->lock);
         if (!(f->cache.r.mask[c / 32] & (1 << (c % 32)))) {
             pthread_mutex_unlock(&f->lock);
-            return -1;                                    //如果在这里返回那么这是一个未知错误，我也不知道发什么了什么
+            return -EIO;                                    //如果在这里返回那么读取出错
         }
         lseek(f->file, offset, SEEK_SET);
         int len = Min(size, (c + 1) * RBS - offset);      //计算最长能读取的字节
@@ -1367,7 +1352,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
         }
 
         if (len < size) {                   //需要读取下一个block
-            int tmp = baiduapi_read(path, buf + len, size - len, offset + len, fi);
+            int tmp = baiduapi_read(f->path, buf + len, size - len, offset + len, fi);
             if (tmp < 0) {                  //调用出错
                 return tmp;
             } else
@@ -1644,61 +1629,41 @@ int baiduapi_fsync(const char *path, int flag, struct fuse_file_info *fi)
     if (fi->fh) {
         int i ;
         filedec *f = (filedec *) fi->fh;
-
         switch (f->type) {
-
         case forread:
             break;
-
         case forwrite:
+            pthread_mutex_lock(&f->lock);
+            for (i = 0; i <= GetWriteBlkNo(f->lengh); ++i) {
+                if ((f->cache.w.taskid[i] == 0) && 
+                    (GETD(f->cache.w.flags, i) || GETZ(f->cache.w.flags, i))) {
+                    block *b = malloc(sizeof(block));
+                    b->bno = i;
+                    b->fd = f;
+                    f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 0);
+                }
+            }
+            pthread_mutex_unlock(&f->lock);
             if (flag) {
-                pthread_mutex_lock(&f->lock);
-                for (i = 0; i <= GetWriteBlkNo(f->lengh); ++i) {
-                    if ((f->cache.w.taskid[i] == 0) && GETD(f->cache.w.flags, i)) {
-                        block *b = malloc(sizeof(block));
-                        b->bno = i;
-                        b->fd = f;
-                        SETT(f->cache.w.flags, i);
-//                        f->cache.w.trans[i / 32] |= (1 << (i % 32));
-                        f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 1);
-                    }
-                };
-                pthread_mutex_unlock(&f->lock);
-                int fail = 1;
-                while (fail) {
-                    fail = 0;
+                int done = 0;
+                while (!done) {
+                    done = 1;
                     for (i = 0; i <= GetWriteBlkNo(f->lengh); ++i) {
                         if (f->cache.w.taskid[i]) {
                             waittask(f->cache.w.taskid[i]);
-                            f->cache.w.taskid[i] = 0;
                         }
-                        if (GETD(f->cache.w.flags, i)) {
+                        if (GETD(f->cache.w.flags, i) || GETZ(f->cache.w.flags, i)) {
                             pthread_mutex_lock(&f->lock);
                             block *b = malloc(sizeof(block));
                             b->bno = i;
                             b->fd =  f;
-                            SETT(f->cache.w.flags, i);
-//                            f->cache.w.trans[i / 32] |= (1 << (i % 32));
-                            f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 1);
+                            f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 0);
                             pthread_mutex_unlock(&f->lock);
-                            fail = 1;
+                            done = 0;
                         }
                     };
 
                 }
-            } else {
-                pthread_mutex_lock(&f->lock);
-                for (i = 0; i < GetWriteBlkNo(f->lengh); ++i) {
-                    if ((f->cache.w.taskid[i] == 0) && GETD(f->cache.w.flags, i)) {
-                        block *b = malloc(sizeof(block));
-                        b->bno = i;
-                        b->fd = f;
-                        SETT(f->cache.w.flags, i);
-//                        f->cache.w.trans[i / 32] |= (1 << (i % 32));
-                        f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 1);
-                    }
-                }
-                pthread_mutex_unlock(&f->lock);
             }
             break;
         }
@@ -1726,17 +1691,18 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
         return -EBADF;
 
     case forwrite:
-        if (GETD(f->cache.w.flags, c) == 0) {
+        if(offset > f->lengh) {
+            baiduapi_truncate(f->path, offset);
+        }
+        if (c && GETD(f->cache.w.flags, c) == 0) {
             sem_wait(&wcache);                                           //不能有太多的block没有同步
         }
-        waittask(f->cache.w.taskid[c]);
         pthread_mutex_lock(&f->lock);
-        f->cache.w.taskid[c] = 0;
         f->flags &= ~SYNCED;
         lseek(f->file, offset, SEEK_SET);
         size_t ret = write(f->file,buf, len);
         SETD(f->cache.w.flags, c);
-        if (GETT(f->cache.w.flags, c)) {
+        if (f->cache.w.taskid[c]) {
             SETR(f->cache.w.flags, c);
         }
         pthread_mutex_unlock(&f->lock);
@@ -1746,20 +1712,11 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
         }
 
         if (ret + offset > f->lengh) {      //文件长度被扩展
-            int oc = GetWriteBlkNo(f->lengh); //原来的块数
-            int nc = GetWriteBlkNo(offset);   //扩展后的块数
-            
-            for(int i=oc; i< nc; ++i){ //nc已经置过位了
-                SETD(f->cache.w.flags, i);
-                if (GETT(f->cache.w.flags, i)) {
-                    SETR(f->cache.w.flags, i);
-                }
-            }
             f->lengh = ret + offset;
         }
 
         if (len < size) {                   //需要写入下一个block
-            int tmp = baiduapi_write(path, buf + len, size - len, offset + len, fi);
+            int tmp = baiduapi_write(f->path, buf + len, size - len, offset + len, fi);
             if (tmp < 0) {                  //调用出错
                 return tmp;
             } else {
@@ -1788,24 +1745,40 @@ int baiduapi_truncate(const char * path, off_t offset) {
         if (f->flags & TRANSF) {
             f->flags |= REOPEN;
         }
+        pthread_mutex_unlock(&f->lock);
+        int oc = GetWriteBlkNo(f->lengh); //原来的块数
+        int nc = GetWriteBlkNo(offset);   //扩展后的块数
         if (offset > f->lengh) {      //文件长度被扩展
-            int oc = GetWriteBlkNo(f->lengh); //原来的块数
-            int nc = GetWriteBlkNo(offset);   //扩展后的块数
-            
-            for(int i=oc; i<=nc; ++i){
-                SETD(f->cache.w.flags, i);
-                if (GETT(f->cache.w.flags, i)) {
-                    SETR(f->cache.w.flags, i);
-                }
+            if (oc && GETD(f->cache.w.flags, oc) == 0) {
+                sem_wait(&wcache);                                           //不能有太多的block没有同步
+            }
+            pthread_mutex_lock(&f->lock);
+            SETD(f->cache.w.flags, oc);
+            if (f->cache.w.taskid[oc]) {
+                SETR(f->cache.w.flags, oc);
+            }
+            for(int i=oc+1; i<=nc; ++i){
+                SETZ(f->cache.w.flags, i);
             }
         }else{
-            int ret = ftruncate(f->file, offset);
-            if(ret) {
-                pthread_mutex_unlock(&f->lock);
-                return ret;
+            if (nc && GETD(f->cache.w.flags, nc) == 0) {
+                sem_wait(&wcache);                                           //不能有太多的block没有同步
             }
-            
+            pthread_mutex_lock(&f->lock);
+            SETD(f->cache.w.flags, nc);
+            if (f->cache.w.taskid[nc]) {
+                SETR(f->cache.w.flags, nc);
+            }
+            for(int i=nc+1; i<=oc; ++i){
+                CLRA(f->cache.w.flags, i);
+            }
         }
+        int ret = ftruncate(f->file, offset);
+        if(ret) {
+            pthread_mutex_unlock(&f->lock);
+            return ret;
+        }
+
         f->lengh = offset;
         pthread_mutex_unlock(&f->lock);
         return 0;

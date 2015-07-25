@@ -23,18 +23,20 @@ void *dotask( long t ) {                                //执行任务
         pthread_mutex_lock( pool.lock + t );            //等待任务
         retval = pool.tsk[t]->task( pool.tsk[t]->param );
 
-        if ( pool.tsk[t]->flags & NEEDRET ) {
-            pthread_mutex_lock( &vallock );
-            valnode * val=valmap[pool.taskid[t]];
-            val->done = 1;
-            val->val = retval;         //存储结果
-
-            for ( int i = 0; i < val->waitc; ++i ) {
-                sem_post( &val->wait );    //发信号告诉waittask
-            }
-
-            pthread_mutex_unlock( &vallock );
+        pthread_mutex_lock( &vallock );
+        valnode * val=valmap[pool.taskid[t]];
+        val->done = 1;
+        val->val = retval;         //存储结果
+        for ( int i = 0; i < val->waitc; ++i ) {
+            sem_post( &val->wait );    //发信号告诉waittask
         }
+        if ((pool.tsk[t]->flags & NEEDRET)==0 && val->waitc == 0){
+            valmap.erase(pool.taskid[t]);
+            sem_destroy( &val->wait );
+            delete val;
+        }
+        pthread_mutex_unlock( &vallock );
+        
         pthread_mutex_destroy(&pool.tsk[t]->lock);
         free( pool.tsk[t] );
         pool.tsk[t] = 0;
@@ -116,16 +118,14 @@ task_t addtask( taskfunc task, void *param , uint flags ) {
 
     pthread_mutex_unlock( &schedlock );
 
-    if ( flags & NEEDRET ) {
-        valnode *val = ( valnode * )malloc( sizeof( valnode ) );
-//        val->visited = 0;
-        val->done = 0;
-        val->waitc = 0;
-        sem_init( &val->wait, 0 , 0 );
-        pthread_mutex_lock(&vallock);
-        valmap[id] = val;
-        pthread_mutex_unlock(&vallock);
-    }
+    valnode *val = ( valnode * )malloc( sizeof( valnode ) );
+    val->done = 0;
+    val->waitc = 0;
+    sem_init( &val->wait, 0 , 0 );
+    pthread_mutex_lock(&vallock);
+    valmap[id] = val;
+    pthread_mutex_unlock(&vallock);
+    
     sem_post( &tasksum );                                       //发信号给调度线程
     if(flags & WAIT){
         pthread_mutex_lock(&t->lock);
@@ -167,7 +167,6 @@ void *waittask( task_t id ) {
         pthread_mutex_unlock( &vallock );
         return NULL;
     }
-//    t->second->visited=1;
     retval=t->second->val;
     if(--t->second->waitc==0){                                  //没有其他线程在等待结果，做清理操作
         sem_destroy( &t->second->wait );
@@ -176,4 +175,17 @@ void *waittask( task_t id ) {
     }
     pthread_mutex_unlock( &vallock );
     return retval;
+}
+
+
+int taskisdoing(task_t id) {
+    pthread_mutex_lock( &vallock );
+    auto t = valmap.find( id );
+
+    if ( t == valmap.end() ) {                     //没有该任务或者已经取回结果，返回0
+        pthread_mutex_unlock( &vallock );
+        return 0;
+    }
+    pthread_mutex_unlock( &vallock );
+    return 1;
 }

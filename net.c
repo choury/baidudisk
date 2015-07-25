@@ -183,7 +183,7 @@ static CURL* getcurl(){
         curl_easy_setopt( curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
 //        curl_easy_setopt( curl, CURLOPT_TIMEOUT, 300 );
         curl_easy_setopt( curl, CURLOPT_LOW_SPEED_LIMIT, 1 );
-        curl_easy_setopt( curl, CURLOPT_LOW_SPEED_TIME, 60 );
+        curl_easy_setopt( curl, CURLOPT_LOW_SPEED_TIME, 120 );
         curl_easy_setopt( curl, CURLOPT_CONNECTTIMEOUT, 120 );
         curl_easy_setopt( curl, CURLOPT_NOSIGNAL, 1 );
         curl_easy_setopt( curl, CURLOPT_VERBOSE, 0 );
