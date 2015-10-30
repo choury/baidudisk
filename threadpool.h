@@ -24,10 +24,10 @@ typedef struct node{
 }tasknode;
 
 typedef struct{
-    sem_t  wait;
-    int    done;
-    int    waitc;
-    void*  val;
+    pthread_cond_t   cond;
+    int              done;
+    int              waitc;
+    void*            val;
 }valnode;
 
 typedef struct {
