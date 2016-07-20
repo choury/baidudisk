@@ -1757,7 +1757,8 @@ int baiduapi_truncate(const char * path, off_t offset) {
             if (f->cache.w.taskid[oc]) {
                 SETR(f->cache.w.flags, oc);
             }
-            for(int i=oc+1; i<=nc; ++i){
+            int i;
+            for(i=oc+1; i<=nc; ++i){
                 SETZ(f->cache.w.flags, i);
             }
         }else{
@@ -1769,7 +1770,8 @@ int baiduapi_truncate(const char * path, off_t offset) {
             if (f->cache.w.taskid[nc]) {
                 SETR(f->cache.w.flags, nc);
             }
-            for(int i=nc+1; i<=oc; ++i){
+            int i;
+            for(i=nc+1; i<=oc; ++i){
                 CLRA(f->cache.w.flags, i);
             }
         }
