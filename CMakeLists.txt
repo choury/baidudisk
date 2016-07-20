@@ -7,4 +7,4 @@ install(TARGETS baidudisk RUNTIME DESTINATION bin)
 set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -g")
 set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64 -std=c++11 -Wall -g")
 
-target_link_libraries(baidudisk json fuse ssl crypto pthread curl)
+target_link_libraries(baidudisk json-c fuse ssl crypto pthread curl)

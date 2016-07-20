@@ -23,7 +23,7 @@ static pthread_mutex_t slock;
 
 static int inline isindir(const char *dirpath, const char *path)
 {
-    int i;
+    size_t i;
     size_t len = strlen(dirpath);
     if (dirpath[len - 1] == '/') {
         --len;

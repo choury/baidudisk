@@ -18,7 +18,7 @@ static pthread_mutex_t lockcon;                         //操作那个链表使�
 
 static pthread_mutex_t *lockarray;                      //这个锁用来openssl多线程操作互斥
 
-void ( *errorlog )( const char *__restrict fmt, ... );
+int ( *errorlog )( const char *__restrict fmt, ... );
 
 
 static void lock_callback( int mode, int type, char *file, int line ) {
@@ -181,7 +181,7 @@ static CURL* getcurl(){
         curl_easy_setopt( curl, CURLOPT_MAXREDIRS, 5 );
         curl_easy_setopt( curl, CURLOPT_HEADER, 0 );
         curl_easy_setopt( curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
-//        curl_easy_setopt( curl, CURLOPT_TIMEOUT, 300 );
+        curl_easy_setopt( curl, CURLOPT_TIMEOUT, 60 );
         curl_easy_setopt( curl, CURLOPT_LOW_SPEED_LIMIT, 1 );
         curl_easy_setopt( curl, CURLOPT_LOW_SPEED_TIME, 120 );
         curl_easy_setopt( curl, CURLOPT_CONNECTTIMEOUT, 120 );

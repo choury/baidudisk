@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <errno.h>
-#include <json/json.h>
-#include <json/json_util.h>
-#include <json/printbuf.h>
+#include <json-c/json.h>
+#include <json-c/json_util.h>
+#include <json-c/printbuf.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -25,7 +25,7 @@ struct json_object* json_object_from_FILE(FILE* fp)
         printbuf_memappend(pb, buf, ret);
     }
     if(ret < 0) {
-        MC_ABORT("json_object_from_FILE: error reading file: %s\n",strerror(errno));
+        MC_ERROR("json_object_from_FILE: error reading file: %s\n",strerror(errno));
         printbuf_free(pb);
         return NULL;
     }

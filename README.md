@@ -16,7 +16,7 @@ gcc, g++(需支持c++11)
 
 
 并且安装以下软件包:
-libcurl4 libcurl4-openssl libjson libfuse2 libssl 和相应的dev包（如果有）
+libcurl4 libcurl4-openssl json-c libfuse2 libssl 和相应的dev包（如果有）
 
 你的linux内核需要装载fuse模块(lsmod | grep fuse)
 

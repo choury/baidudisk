@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 
-#include <json/json.h>
+#include <json-c/json.h>
 
 
 #include "json_object_from_file.h"

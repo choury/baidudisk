@@ -9,12 +9,12 @@ extern "C" {
 #endif
 
     
-#define RBS            (uint64_t)0x200000         //1M,读缓存分块大小
+#define RBS            (uint64_t)0x100000         //512K,读缓存分块大小
 #define LWBS           (uint64_t)0x800000         //8M,前一半分块大小
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
 #define RBC            (uint64_t)10240            //读缓存个数
 #define WBC            (uint64_t)1024             //写缓存分块个数，百度定的，最大1024
-#define MAXCACHE       10
+#define MAXCACHE       50
     
 #define PATHLEN        1024    
 
