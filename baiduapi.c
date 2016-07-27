@@ -8,6 +8,8 @@
 #include <fuse.h>
 
 
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 
@@ -367,88 +369,79 @@ int gettoken()
     if (!(json_get = json_object_from_file(ATfile))) {                     //如果当前目录下面没有.Access_Token文件，那么重新获取
         fprintf(stderr, "You have to login first!\n");
 
-        if (fork() == 0) {
-            snprintf(buff, sizeof(buff) - 1,
-                     "x-www-browser "                                               //什么？你说没有x-www-browser？那可不关我的事，你自己搞定吧
-                     "-new-tab "
-                     "\"http://openapi.baidu.com/oauth/2.0/authorize?"
-                     "response_type=code&"
-                     "client_id=%s&"
-                     "redirect_uri=oob&"
-                     "scope=netdisk&"
-                     "display=page\""
-                     , ak);
-            system(buff);
-            exit(errno);
-        } else {
-            puts("please copy the authorization code from the browser:");
-            scanf("%199s", code);
-            sprintf(buff,
-                    "https://openapi.baidu.com/oauth/2.0/token?"
-                    "grant_type=authorization_code&"
-                    "code=%s&"
-                    "client_id=%s&"
-                    "client_secret=%s&"
-                    "redirect_uri=oob"
-                    , code, ak, sk);
-            FILE *tpfile = tmpfile();
+        printf("http://openapi.baidu.com/oauth/2.0/authorize?"
+               "response_type=code&"
+               "client_id=%s&"
+               "redirect_uri=oob&"
+               "scope=netdisk&"
+               "display=page\n", ak);
+        puts("please open the url above,and copy the authorization code from the browser:");
+        scanf("%199s", code);
+        sprintf(buff,
+                "https://openapi.baidu.com/oauth/2.0/token?"
+                "grant_type=authorization_code&"
+                "code=%s&"
+                "client_id=%s&"
+                "client_secret=%s&"
+                "redirect_uri=oob"
+                , code, ak, sk);
+        FILE *tpfile = tmpfile();
 
-            if (!tpfile) {
-                int lasterrno = errno;
-                errorlog("create temp file error:%s\n", strerror(errno));
-                return -lasterrno;
-            }
-
-            Http *r = Httpinit(buff);
-
-            if (r == NULL) {
-                int lasterrno = errno;
-                errorlog("can't resolve domain:%s\n", strerror(errno));
-                fclose(tpfile);
-                return -lasterrno;
-            }
-
-            r->method = get;
-            r->writefunc = savetofile;
-            r->writeprame = tpfile;
-
-            if ((errno = request(r)) != CURLE_OK) {
-                errorlog("network error:%d\n", errno);
-                fclose(tpfile);
-                Httpdestroy(r);
-                return -EPROTO;
-            }
-
-            Httpdestroy(r);
-            json_get = json_object_from_FILE(tpfile);
-            fclose(tpfile);
-
-            if (json_get == NULL) {
-                errorlog("json_object_from_FILE filed!\n");
-                return -EPROTO;
-            }
-
-            json_object *jerror_code;
-            if (json_object_object_get_ex(json_get, "error_code",&jerror_code)) {
-                int errorno = json_object_get_int(jerror_code) ;
-                json_object_put(json_get);
-                return handleerror(errorno);
-            }
-
-            json_object *jaccess_token;
-            if (json_object_object_get_ex(json_get, "access_token",&jaccess_token)) {        //找到access_token了，存到文件里面
-                strcpy(Access_Token, json_object_get_string(jaccess_token));
-                json_object_to_file(ATfile, json_get);
-                json_object_put(json_get);
-            } else {
-                puts("Authorization error!");
-                remove(ATfile);
-                json_object_put(json_get);
-                errno = EPERM;
-                return -errno;
-            }
+        if (!tpfile) {
+            int lasterrno = errno;
+            errorlog("create temp file error:%s\n", strerror(errno));
+            return -lasterrno;
         }
 
+        Http *r = Httpinit(buff);
+
+        if (r == NULL) {
+            int lasterrno = errno;
+            errorlog("can't resolve domain:%s\n", strerror(errno));
+            fclose(tpfile);
+            return -lasterrno;
+        }
+
+        r->method = get;
+        r->writefunc = savetofile;
+        r->writeprame = tpfile;
+
+        if ((errno = request(r)) != CURLE_OK) {
+            errorlog("network error:%d\n", errno);
+            fclose(tpfile);
+            Httpdestroy(r);
+            return -EPROTO;
+        }
+
+        Httpdestroy(r);
+        json_get = json_object_from_FILE(tpfile);
+        fclose(tpfile);
+
+        if (json_get == NULL) {
+            errorlog("json_object_from_FILE filed!\n");
+            return -EPROTO;
+        }
+
+        json_object *jerror_code;
+        if (json_object_object_get_ex(json_get, "error_code",&jerror_code))
+        {
+            int errorno = json_object_get_int(jerror_code) ;
+            json_object_put(json_get);
+            return handleerror(errorno);
+        }
+
+        json_object *jaccess_token;
+        if (json_object_object_get_ex(json_get, "access_token",&jaccess_token)) {        //找到access_token了，存到文件里面
+            strcpy(Access_Token, json_object_get_string(jaccess_token));
+            json_object_to_file(ATfile, json_get);
+            json_object_put(json_get);
+        } else {
+            puts("Authorization error!");
+            remove(ATfile);
+            json_object_put(json_get);
+            errno = EPERM;
+            return -errno;
+        }
     } else {            //如果文件里面存在，直接读取文件，当然，这里没有考虑有不怀好意的人修改我的文件的情况
         json_object *jaccess_token;
         json_object_object_get_ex(json_get, "access_token",&jaccess_token);
@@ -1757,7 +1750,8 @@ int baiduapi_truncate(const char * path, off_t offset) {
             if (f->cache.w.taskid[oc]) {
                 SETR(f->cache.w.flags, oc);
             }
-            for(int i=oc+1; i<=nc; ++i){
+            int i;
+            for(i=oc+1; i<=nc; ++i){
                 SETZ(f->cache.w.flags, i);
             }
         }else{
@@ -1769,7 +1763,8 @@ int baiduapi_truncate(const char * path, off_t offset) {
             if (f->cache.w.taskid[nc]) {
                 SETR(f->cache.w.flags, nc);
             }
-            for(int i=nc+1; i<=oc; ++i){
+            int i;
+            for(i=nc+1; i<=oc; ++i){
                 CLRA(f->cache.w.flags, i);
             }
         }
