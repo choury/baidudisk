@@ -87,6 +87,10 @@ static int handleerror(const int error)
         errno = ENOENT;
         break;
 
+    case 31243:
+        errno = ETIMEDOUT;
+        break;
+
     default:
         errorlog("No defined errno:%d\n", error);
         errno = EPROTO;
@@ -143,7 +147,7 @@ static size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p
 
 
 typedef struct {
-    filedec *fd;
+    filedec *file;
     size_t  bno;
 } block;
 
@@ -156,7 +160,7 @@ void readblock(block *tb)
     size_t startp = b.bno * RBS;
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, b.fd->path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, b.file->path);
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=download&"
@@ -186,16 +190,15 @@ void readblock(block *tb)
     }
 
     Httpdestroy(r);
-    pthread_mutex_lock(&b.fd->lock);
-    lseek(b.fd->file, startp, SEEK_SET);
-    write(b.fd->file,bs.buf, bs.offset);
-    b.fd->cache.r.mask[b.bno / 32] |= 1 << (b.bno % 32);
-    pthread_mutex_unlock(&b.fd->lock);
+    pthread_mutex_lock(&b.file->lock);
+    pwrite(b.file->fd, bs.buf, bs.offset, startp);
+    b.file->cache.r.mask[b.bno / 32] |= 1 << (b.bno % 32);
+    pthread_mutex_unlock(&b.file->lock);
     return;
 ret:
-    pthread_mutex_lock(&b.fd->lock);
-    b.fd->cache.r.taskid[b.bno] = 0;
-    pthread_mutex_unlock(&b.fd->lock);
+    pthread_mutex_lock(&b.file->lock);
+    b.file->cache.r.taskid[b.bno] = 0;
+    pthread_mutex_unlock(&b.file->lock);
 }
 
 //上传一个block作为tmpfile
@@ -226,11 +229,10 @@ void uploadblock(block *tb)
 
     char *buf = (char *)malloc(GetWriteBlkSize(b.bno));
     buffstruct bs = {0, GetWriteBlkSize(b.bno), buf};
-    pthread_mutex_lock(&b.fd->lock);
-    lseek(b.fd->file, GetWriteBlkStartPoint(b.bno), SEEK_SET);
-    bs.len = read(b.fd->file, bs.buf, bs.len);
-    CLRR(b.fd->cache.w.flags, b.bno);
-    pthread_mutex_unlock(&b.fd->lock);
+    pthread_mutex_lock(&b.file->lock);
+    bs.len = pread(b.file->fd, bs.buf, bs.len, GetWriteBlkStartPoint(b.bno));
+    CLRR(b.file->cache.w.flags, b.bno);
+    pthread_mutex_unlock(&b.file->lock);
 
     r->method = post_formdata;
     r->readfunc = readfrombuff;
@@ -268,27 +270,27 @@ void uploadblock(block *tb)
 
     json_object *jmd5;
     if (json_object_object_get_ex(json_get, "md5",&jmd5)) {
-        pthread_mutex_lock(&b.fd->lock);
-        if (GETR(b.fd->cache.w.flags, b.bno)) {
-            CLRR(b.fd->cache.w.flags, b.bno);
+        pthread_mutex_lock(&b.file->lock);
+        if (GETR(b.file->cache.w.flags, b.bno)) {
+            CLRR(b.file->cache.w.flags, b.bno);
         } else {
-            strcpy(b.fd->cache.w.md5[b.bno], json_object_get_string(jmd5));
-            CLRD(b.fd->cache.w.flags, b.bno);
-            CLRZ(b.fd->cache.w.flags, b.bno);
+            strcpy(b.file->cache.w.md5[b.bno], json_object_get_string(jmd5));
+            CLRD(b.file->cache.w.flags, b.bno);
+            CLRZ(b.file->cache.w.flags, b.bno);
             if (b.bno)
                 sem_post(&wcache);
         }
-        b.fd->cache.w.taskid[b.bno] = 0;
-        pthread_mutex_unlock(&b.fd->lock);
+        b.file->cache.w.taskid[b.bno] = 0;
+        pthread_mutex_unlock(&b.file->lock);
         json_object_put(json_get);
         return;
     } else {
         errorlog("Did not get MD5:%s\n", json_object_to_json_string(json_get));
     }
 ret:
-    pthread_mutex_lock(&b.fd->lock);
-    b.fd->cache.w.taskid[b.bno] = 0;
-    pthread_mutex_unlock(&b.fd->lock);
+    pthread_mutex_lock(&b.file->lock);
+    b.file->cache.w.taskid[b.bno] = 0;
+    pthread_mutex_unlock(&b.file->lock);
 }
 
 /* 遍历fcache的处理函数
@@ -317,7 +319,7 @@ void handlefcache(filedec *f)
                         {
                             block *b = (block *)malloc(sizeof(block));
                             b->bno = i;
-                            b->fd = f;
+                            b->file = f;
                             f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 0);
                         }
                     }
@@ -567,17 +569,21 @@ int baiduapi_getattr(const char *path, struct stat *st)
         } else {
             st->st_size = f->lengh;
             st->st_mode = S_IFREG | 0444;
-            st->st_ctim.tv_sec = f->ctime;
-            st->st_mtim.tv_sec = f->mtime;
+            st->st_ctime = f->ctime;
+            st->st_mtime = f->mtime;
             pthread_mutex_unlock(&f->lock);
             return 0;
         }
     }
 
-    struct stat *tst = getscache(path);
-    if (tst) {
-        *st = *tst;
-        return 0;
+    struct stat tst = getscache(path);
+    if (tst.st_ino) {
+        if(tst.st_mode == 0){
+            return -ENOENT;
+        }else{
+            *st = tst;
+            return 0;
+        }
     }
     char buff[2048];
     json_object *json_get = 0, *filenode;
@@ -662,7 +668,6 @@ int baiduapi_getattr(const char *path, struct stat *st)
     } else {
         st->st_mode = S_IFREG | 0444;
     }
-    addscache(path, *st);
     json_object_put(json_get);
     return 0;
 }
@@ -752,11 +757,11 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
         
         json_object *jmtime;
         json_object_object_get_ex(filenode, "mtime",&jmtime);
-        st.st_mtim.tv_sec = json_object_get_int64(jmtime);
+        st.st_mtime = json_object_get_int64(jmtime);
         
         json_object *jctime;
         json_object_object_get_ex(filenode, "ctime",&jctime);
-        st.st_ctim.tv_sec = json_object_get_int64(jctime);
+        st.st_ctime = json_object_get_int64(jctime);
         
         json_object *jfs_id;
         json_object_object_get_ex(filenode, "fs_id",&jfs_id);
@@ -777,7 +782,7 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
         json_object *jpath;
         json_object_object_get_ex(filenode, "path",&jpath);
         filler(buf, json_object_get_string(jpath) + pathlen, &st, 0);
-        addscache(json_object_get_string(jpath) + strlen(basepath), st);
+        addscache(json_object_get_string(jpath) + strlen(basepath), &st);
     }
 
     json_object_put(json_get);
@@ -921,7 +926,6 @@ int baiduapi_mkdir(const char *path, mode_t mode)
 //删除文件（不是文件夹）
 int baiduapi_unlink(const char *path)
 {
-    rmscache(path);
     filedec *f = getfcache(path);
 
     if (f) {
@@ -989,21 +993,13 @@ int baiduapi_unlink(const char *path)
     }
 
     json_object_put(json_get);
+    rmscache(path);
     return 0;
 }
 
-//删除文件夹，会失效所有状态缓存
+//删除文件夹
 int baiduapi_rmdir(const char *path)
 {
-    /*    if(getscache(path))
-            return -ENOTEMPTY;
-        filedec *f = getcache(path);
-        if (f) {
-            pthread_mutex_unlock(&f->lock);
-            return -ENOTEMPTY;
-        }*/
-
-
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
@@ -1149,12 +1145,10 @@ int baiduapi_link(const char *target, const char *lnname)
  */
 int baiduapi_rename(const char *oldname, const char *newname)
 {
-    rmscache(oldname);
     filedec *f = getfcache(oldname);
-
     if (f) {
-        renamecache(oldname, newname);
         if(f->type == forwrite && (f->flags & SYNCED) == 0) {
+            renamecache(oldname, newname);
             pthread_mutex_unlock(&f->lock);
             return 0;
         }
@@ -1220,6 +1214,7 @@ int baiduapi_rename(const char *oldname, const char *newname)
     }
 
     json_object_put(json_get);
+    renamecache(oldname, newname);
     return 0;
 }
 
@@ -1250,8 +1245,8 @@ int baiduapi_open(const char *path, struct fuse_file_info *fi)
     }
 
 
-    struct stat t;
-    int ret = baiduapi_getattr(path, &t);
+    struct stat st;
+    int ret = baiduapi_getattr(path, &st);
 
     if (ret == -ENOENT) {
         if (fi->flags & O_CREAT) {                          //如果要求创建文件则调用create
@@ -1260,7 +1255,7 @@ int baiduapi_open(const char *path, struct fuse_file_info *fi)
             return ret;
         }
     } else if ((fi->flags & O_ACCMODE) == O_RDONLY) {
-        filedec *f = initfcache(path);
+        filedec *f = newfcache(path);
 
         if (f == NULL) {
             int lasterrno = errno;
@@ -1270,9 +1265,9 @@ int baiduapi_open(const char *path, struct fuse_file_info *fi)
 
         f->type = forread;
         f->count = 1;
-        f->lengh = t.st_size;
-        f->ctime = t.st_ctim.tv_sec;
-        f->mtime = t.st_mtim.tv_sec;
+        f->lengh = st.st_size;
+        f->ctime = st.st_ctime;
+        f->mtime = st.st_mtime;
         fi->fh = (uint64_t) f;
         return 0;
     }
@@ -1322,7 +1317,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
                     f->cache.r.taskid[p] == 0 &&
                     !(f->cache.r.mask[p / 32] & (1 << (p % 32)))) {
                 block *b = (block *) malloc(sizeof(block));
-                b->fd = f;
+                b->file = f;
                 b->bno = p;
                 f->cache.r.taskid[p] = addtask((taskfunc) readblock, b, 0);
                 f->flags &= ~SYNCED;
@@ -1335,9 +1330,8 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
             pthread_mutex_unlock(&f->lock);
             return -EIO;                                    //如果在这里返回那么读取出错
         }
-        lseek(f->file, offset, SEEK_SET);
         int len = Min(size, (c + 1) * RBS - offset);      //计算最长能读取的字节
-        ret = read(f->file,buf, len);
+        ret = pread(f->fd,buf, len, offset);
         pthread_mutex_unlock(&f->lock);
 
         if (ret != len) {                   //读取出错了
@@ -1357,8 +1351,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
     case forwrite:
 
         pthread_mutex_lock(&f->lock);
-        lseek(f->file, offset, SEEK_SET);
-        ret = read(f->file,buf, size);
+        ret = pread(f->fd,buf, size, offset);
         pthread_mutex_unlock(&f->lock);
 
         return ret;
@@ -1424,6 +1417,7 @@ int baiduapi_uploadfile(int file, const char *path)
     json_object *jerror_code;
     if (json_object_object_get_ex(json_get, "error_code",&jerror_code)) {
         int errorno = json_object_get_int(jerror_code) ;
+        errorlog("get error:%s\n", json_object_to_json_string(json_get));
         json_object_put(json_get);
         return handleerror(errorno);
     }
@@ -1494,6 +1488,7 @@ int baiduapi_uploadtmpfile(int file, char *md5)
     json_object *jerror_code;
     if (json_object_object_get_ex(json_get, "error_code",&jerror_code)) {
         int errorno = json_object_get_int(jerror_code) ;
+        errorlog("get error:%s\n", json_object_to_json_string(json_get));
         json_object_put(json_get);
         return handleerror(errorno);
     }
@@ -1593,7 +1588,7 @@ int baiduapi_mergertmpfile(const char *path, filedec *f)
 int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
     (void) mode;
-    filedec *f = initfcache(path);
+    filedec *f = newfcache(path);
     if (f == NULL) {
         int lasterrno = errno;
         errorlog("Init fcache error:%s\n", strerror(errno));
@@ -1632,7 +1627,7 @@ int baiduapi_fsync(const char *path, int flag, struct fuse_file_info *fi)
                     (GETD(f->cache.w.flags, i) || GETZ(f->cache.w.flags, i))) {
                     block *b = malloc(sizeof(block));
                     b->bno = i;
-                    b->fd = f;
+                    b->file = f;
                     f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 0);
                 }
             }
@@ -1649,7 +1644,7 @@ int baiduapi_fsync(const char *path, int flag, struct fuse_file_info *fi)
                             pthread_mutex_lock(&f->lock);
                             block *b = malloc(sizeof(block));
                             b->bno = i;
-                            b->fd =  f;
+                            b->file =  f;
                             f->cache.w.taskid[i] = addtask((taskfunc) uploadblock, b, 0);
                             pthread_mutex_unlock(&f->lock);
                             done = 0;
@@ -1692,8 +1687,7 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
         }
         pthread_mutex_lock(&f->lock);
         f->flags &= ~SYNCED;
-        lseek(f->file, offset, SEEK_SET);
-        size_t ret = write(f->file,buf, len);
+        size_t ret = pwrite(f->fd,buf, len, offset);
         SETD(f->cache.w.flags, c);
         if (f->cache.w.taskid[c]) {
             SETR(f->cache.w.flags, c);
@@ -1768,7 +1762,7 @@ int baiduapi_truncate(const char * path, off_t offset) {
                 CLRA(f->cache.w.flags, i);
             }
         }
-        int ret = ftruncate(f->file, offset);
+        int ret = ftruncate(f->fd, offset);
         if(ret) {
             pthread_mutex_unlock(&f->lock);
             return ret;

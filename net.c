@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <errno.h>
+#include <string.h>
 
 #include "net.h"
 
@@ -49,8 +50,8 @@ static void init_locks( void ) {
         pthread_mutex_init( &( lockarray[i] ), NULL );
     }
 
-    CRYPTO_set_id_callback( ( unsigned long( * )() )thread_id );
-    CRYPTO_set_locking_callback( ( void ( * )() )lock_callback );
+    CRYPTO_set_id_callback(thread_id);
+    CRYPTO_set_locking_callback(lock_callback);
 }
 
 

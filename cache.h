@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
     
-#define RBS            (uint64_t)0x100000         //512K,读缓存分块大小
+#define RBS            (uint64_t)0x100000         //1M,读缓存分块大小
 #define LWBS           (uint64_t)0x800000         //8M,前一半分块大小
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
 #define RBC            (uint64_t)10240            //读缓存个数
@@ -52,7 +52,7 @@ typedef struct{
     enum{forread,forwrite}type;
     char path[PATHLEN];
     pthread_mutex_t lock;
-    int file;
+    int fd;
     union{
         rfcache r;
         wfcache w;
@@ -68,6 +68,7 @@ typedef struct{
 #define RELEASE        8                        //是否被标记释放
 #define REOPEN        16                        //是否同步时被重新打开过
 #define ONDELE        32                        //正在被删除或者释放
+#define ENCRYPT       64                        //加密文件
     volatile unsigned char flags;
 }filedec;
 
@@ -81,18 +82,21 @@ size_t GetWriteBlkEndPointFromP(size_t p);
 #define GetWriteBlkSize(b)  ((b)<WBC/2?LWBS:HWBS)
 
 void initcache();
-filedec * initfcache(const char *path);
+void renamecache(const char *oldname,const char *newname);
+void fcachesync(filedec *f);
+
+
+filedec * newfcache(const char *path);
 int freefcache(filedec *f);
 void addfcache(filedec *f);
-void addscache(const char* path,struct stat st);
 filedec *getfcache(const char *path);
-struct stat *getscache(const char *path);
-void rmscache(const char *path);
-void clearscache();
-void renamecache(const char *oldname,const char *newname);
 void eachfcache(eachfunc func);
 void filldir(const char *path,void *buf,fuse_fill_dir_t filler);
-void fcachesync(filedec *f);
+
+void addscache(const char* path, const struct stat* st);
+struct stat getscache(const char *path);
+void rmscache(const char *path);
+
 
 #ifdef  __cplusplus
 }

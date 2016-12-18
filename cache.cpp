@@ -1,16 +1,19 @@
 #include <pthread.h>
 #include <unordered_map>
+#include <map>
+#include <vector>
 #include <fuse.h>
 #include <string.h>
 #include <string>
 #include <unistd.h>
+#include <assert.h>
+
 #include "cache.h"
 #include "baiduapi.h"
 
 
 using namespace std;
 static unordered_map <string, filedec *> filecache;
-static unordered_map <string, struct stat>scache;
 static pthread_mutex_t flock;
 static pthread_mutex_t slock;
 
@@ -92,6 +95,73 @@ size_t GetWriteBlkEndPointFromP(size_t p)
     }
 }
 
+class cache_t{
+    map<string, cache_t> child;
+public:
+    string name;
+    struct stat st;
+    filedec *f = nullptr;
+    void add(string path, struct stat st){
+        auto pos = path.find('/');
+        if(pos == string::npos){
+            name = path;
+            this->st = st;
+        }else{
+            name = path.substr(0, pos);
+            assert(pos != path.length() - 1);
+            string subpath = path.substr(pos+1);
+            string child_name = subpath.substr(0, subpath.find('/'));
+            child[child_name].add(subpath, st);
+        }
+
+    }
+    struct stat get(string path){
+        auto pos = path.find('/');
+        if(pos == string::npos){
+            assert(name == path);
+            return st;
+        }else{
+            assert(name == path.substr(0, pos));
+            assert(pos != path.length() - 1);
+            string subpath = path.substr(pos+1);
+            string child_name = subpath.substr(0, subpath.find('/'));
+            auto c = child.find(child_name);
+            if(c == child.end()){
+                struct stat st;
+                st.st_ino = child.size();
+                st.st_mode = 0;
+                return st;
+            }else{
+                return child[child_name].get(subpath);
+            }
+        }
+    }
+    bool del(string path){
+        auto pos = path.find('/');
+        if(pos == string::npos){
+            assert(name == path);
+            return true;
+        }else{
+            assert(name == path.substr(0, pos));
+            if(pos == path.length()-1){
+                return true;
+            }else{
+                string subpath = path.substr(pos+1);
+                string child_name = subpath.substr(0, subpath.find('/'));
+                auto c = child.find(child_name);
+                if(c == child.end()){
+                    return false;
+                }else{
+                    if(child[child_name].del(subpath)){
+                        child.erase(child_name);
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+}cache_root;
+
 
 //初始化缓存系统
 void initcache()
@@ -106,7 +176,7 @@ void initcache()
 }
 
 //获得一个初始化好的fcache,如果创建成功，此fcache 会被自动加入缓存中
-filedec *initfcache(const char *path)
+filedec *newfcache(const char *path)
 {
     filedec *f = new filedec;
     if (f == NULL) {
@@ -123,9 +193,9 @@ filedec *initfcache(const char *path)
 
     pthread_mutexattr_destroy(&mutexattr);
 
-    f->file = tempfile();
+    f->fd = tempfile();
 
-    if (f->file == -1) {
+    if (f->fd == -1) {
         int lasterrno = errno;
         free(f);
         errno = lasterrno;
@@ -163,7 +233,7 @@ void fcachesync(filedec *f)
         if (f->lengh < LWBS){
             pthread_mutex_lock(&f->lock);
             if ((f->flags & DELETE) == 0 && (f->flags & REOPEN) == 0) {
-                while (baiduapi_uploadfile(f->file, f->path));
+                while (baiduapi_uploadfile(f->fd, f->path));
                 CLRD(f->cache.w.flags, 0);
                 f->flags |= SYNCED;
                 time(&f->mtime);
@@ -205,7 +275,7 @@ int freefcache(filedec *f)
             fcachesync(f);
         }
         pthread_mutex_destroy(&f->lock);
-        close(f->file);
+        close(f->fd);
         delete f;
         pthread_mutex_unlock(&flock);
         return 0;
@@ -242,13 +312,6 @@ void addfcache(filedec *f)
     pthread_mutex_unlock(&flock);
 }
 
-void addscache(const char *path, struct stat st)
-{
-    pthread_mutex_lock(&slock);
-    scache[path] = st;
-    pthread_mutex_unlock(&slock);
-}
-
 filedec *getfcache(const char *path)
 {
     filedec *f;
@@ -262,44 +325,6 @@ filedec *getfcache(const char *path)
     }
     pthread_mutex_unlock(&flock);
     return f;
-}
-
-struct stat *getscache(const char *path)
-{
-    struct stat *st;
-    pthread_mutex_lock(&slock);
-    auto t = scache.find(path);
-    if (t == scache.end()) {
-        st = nullptr;
-    } else {
-        st = &t->second;
-    }
-    pthread_mutex_unlock(&slock);
-    return st;
-}
-
-void rmscache(const char *path)
-{
-    pthread_mutex_lock(&slock);
-    scache.erase(path);
-    pthread_mutex_unlock(&slock);
-}
-
-void clearscache()
-{
-    pthread_mutex_lock(&slock);
-    scache.clear();
-    pthread_mutex_unlock(&slock);
-}
-
-void renamecache(const char *oldname, const char *newname)
-{
-    pthread_mutex_lock(&flock);
-    filecache[newname] = filecache[oldname];
-    filecache.erase(oldname);
-    filedec *f = filecache[newname];
-    strncpy(f->path, newname, PATHLEN);
-    pthread_mutex_unlock(&flock);
 }
 
 void eachfcache(eachfunc func)
@@ -323,9 +348,9 @@ void filldir(const char *path, void *buf, fuse_fill_dir_t filler)
                 isindir(path, f->path))
         {
             st.st_size = f->lengh;
-            st.st_mode = S_IFREG | 0444;
-            st.st_ctim.tv_sec = f->ctime;
-            st.st_mtim.tv_sec = f->mtime;
+            st.st_mode = S_IFREG | 0666;
+            st.st_ctime = f->ctime;
+            st.st_mtime = f->mtime;
             int len = strlen(path);
             if (path[len - 1] != '/'){
                 len++;
@@ -336,5 +361,51 @@ void filldir(const char *path, void *buf, fuse_fill_dir_t filler)
     pthread_mutex_unlock(&flock);
 
 }
+
+void addscache(const char *path, const struct stat* st)
+{
+    pthread_mutex_lock(&slock);
+    cache_root.add(path, *st);
+    pthread_mutex_unlock(&slock);
+}
+
+
+
+struct stat getscache(const char *path)
+{
+    pthread_mutex_lock(&slock);
+    struct stat st = cache_root.get(path);
+    pthread_mutex_unlock(&slock);
+    return st;
+}
+
+void rmscache(const char *path)
+{
+    pthread_mutex_lock(&slock);
+    cache_root.del(path);
+    pthread_mutex_unlock(&slock);
+}
+
+
+void renamecache(const char *oldname, const char *newname)
+{
+    pthread_mutex_lock(&flock);
+    if(filecache.count(oldname)){
+        filecache[newname] = filecache[oldname];
+        filecache.erase(oldname);
+        filedec *f = filecache[newname];
+        strncpy(f->path, newname, PATHLEN);
+    }
+    pthread_mutex_unlock(&flock);
+    pthread_mutex_lock(&slock);
+    struct stat st = cache_root.get(oldname);
+    if(st.st_ino && st.st_mode){
+       cache_root.del(oldname);
+       cache_root.add(newname, st);
+    }
+    pthread_mutex_unlock(&slock);
+}
+
+
 
 

@@ -21,22 +21,23 @@ void *dotask(long t) {                                //执行任务
 
     while (1) {
         pthread_mutex_lock(pool.lock + t);            //等待任务
-        retval = pool.tsk[t]->task(pool.tsk[t]->param);
+        tasknode* node = pool.tsk[t];
+        retval = node->task(node->param);
 
         pthread_mutex_lock(&vallock);
         valnode * val=valmap[pool.taskid[t]];
         val->done = 1;
         val->val = retval;         //存储结果
         pthread_cond_broadcast(&val->cond); //发信号告诉waittask
-        if ((pool.tsk[t]->flags & NEEDRET)==0 && val->waitc == 0){
+        if ((node->flags & NEEDRET)==0 && val->waitc == 0){
             valmap.erase(pool.taskid[t]);
             pthread_cond_destroy(&val->cond);
             delete val;
         }
         pthread_mutex_unlock(&vallock);
         
-        pthread_mutex_destroy(&pool.tsk[t]->lock);
-        free(pool.tsk[t]);
+        pthread_mutex_destroy(&node->lock);
+        free(node);
         pool.tsk[t] = 0;
         pool.taskid[t] = 0;
         sem_post(&trdsum);
@@ -160,12 +161,8 @@ void *waittask(task_t id) {
 
 int taskisdoing(task_t id) {
     pthread_mutex_lock(&vallock);
-    auto t = valmap.find(id);
 
-    if (t == valmap.end()) {                     //没有该任务或者已经取回结果，返回0
-        pthread_mutex_unlock(&vallock);
-        return 0;
-    }
+    auto t = valmap.count(id);                     //没有该任务或者已经取回结果，返回0
     pthread_mutex_unlock(&vallock);
-    return 1;
+    return t;
 }
