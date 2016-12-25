@@ -1,8 +1,15 @@
 #ifndef __URL_CODE__
 
-const char* URLEncode(char* str);
+#ifdef  __cplusplus
+extern "C" {
+#endif
 
+const char* URLEncode(char* str);
 const char * URLDecode(char* str);
+
+#ifdef  __cplusplus
+}
+#endif
 
 
 #endif

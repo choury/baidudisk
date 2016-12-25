@@ -1,10 +1,10 @@
 project(baidudisk)
 
-add_executable(baidudisk cache.cpp net.c urlcode.c json_object_from_file.c baiduapi.c threadpool.cpp main.c)
+add_executable(baidudisk cache.cpp net.c urlcode.c json_object_from_file.c baiduapi.cpp threadpool.cpp main.c)
 
 install(TARGETS baidudisk RUNTIME DESTINATION bin)
 
-set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -g")
-set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64 -std=c++11 -Wall -g")
+set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -ggdb -O0")
+set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64 -std=c++11 -Wall -ggdb -O0")
 
 target_link_libraries(baidudisk json-c fuse ssl crypto pthread curl)

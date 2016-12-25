@@ -18,7 +18,6 @@ struct fuse_operations baiduapi_oper = {
     .mkdir      = baiduapi_mkdir,
     .unlink     = baiduapi_unlink,
     .rmdir      = baiduapi_rmdir,
-    .link       = baiduapi_link,
     .rename     = baiduapi_rename,
     .statfs     = baiduapi_statfs,
     .open       = baiduapi_open,
@@ -28,6 +27,7 @@ struct fuse_operations baiduapi_oper = {
     .release    = baiduapi_release,
     .truncate   = baiduapi_truncate,
     .fsync      = baiduapi_fsync,
+    .flush      = baiduapi_flush,
     .access     = baiduapi_stub,
     .utimens    = baiduapi_stub,
 };

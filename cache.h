@@ -3,6 +3,8 @@
 
 #include "threadpool.h"
 #include <time.h>
+#include <map>
+#include <string>
 
 #ifdef  __cplusplus
 extern "C" {
@@ -12,7 +14,7 @@ extern "C" {
 #define RBS            (uint64_t)0x100000         //1M,读缓存分块大小
 #define LWBS           (uint64_t)0x800000         //8M,前一半分块大小
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
-#define RBC            (uint64_t)10240            //读缓存个数
+#define RBC            (uint64_t)20480            //读缓存个数, 最多20G
 #define WBC            (uint64_t)1024             //写缓存分块个数，百度定的，最大1024
 #define MAXCACHE       50
     
@@ -20,60 +22,64 @@ extern "C" {
 
                     
 
-typedef struct{
+struct rfcache{
+    int fd;
     task_t taskid[RBC];
     unsigned int mask[RBC/32+1];                //为1代表已经从服务器成功读取
-}rfcache;
+    rfcache();
+    ~rfcache();
+};
 
-typedef struct{
+struct wfcache{
+    int fd;
     char md5[WBC][35];
     task_t taskid[WBC];
-    
-//每一个block有4位标志位：bit0(D):是否为脏块,bit1(R):同步时是否被写,bit2(Z):全0块（空洞），bit3:保留
-    unsigned int flags[WBC/8+1];
-//设置D位会同时清除Z位
-#define SETD(flags,b)  do{\
-                           (flags[(b)>>3] |= (1<<(((b)%8)<<2)));\
-                           (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+2)));\
-                       }while(0)
-#define CLRD(flags,b)  (flags[(b)>>3] &= ~(1<<(((b)%8)<<2)))
-#define GETD(flags,b)  (flags[(b)>>3] & (1<<(((b)%8)<<2)))
-#define SETR(flags,b)  (flags[(b)>>3] |= (1<<((((b)%8)<<2)+1)))
-#define CLRR(flags,b)  (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+1)))
-#define GETR(flags,b)  (flags[(b)>>3] & (1<<((((b)%8)<<2)+2)))
-#define SETZ(flags,b)  (flags[(b)>>3] |= (1<<((((b)%8)<<2)+2)))
-#define CLRZ(flags,b)  (flags[(b)>>3] &= ~(1<<((((b)%8)<<2)+2)))
-#define GETZ(flags,b)  (flags[(b)>>3] & (1<<((((b)%8)<<2)+2)))
-#define CLRA(flags,b)  (flags[(b)>>3] &= ~(0xf<<(((b)%8)<<2)))
-}wfcache;
+//每一个block有3位标志位：是否为脏块, 是否在同步,同步时是否被写
+#define WF_DIRTY   1
+#define WF_TRANS   2
+#define WF_REOPEN  4
+    unsigned char flags[WBC];
+    wfcache();
+    ~wfcache();
+};
 
 
-typedef struct{
-    enum{forread,forwrite}type;
-    char path[PATHLEN];
-    pthread_mutex_t lock;
-    int fd;
-    union{
-        rfcache r;
-        wfcache w;
-    }cache;
-    size_t lengh;
-    size_t count;
-    time_t ctime;
-    time_t mtime;
-    
+enum class cache_type{status, read, write};
+
+struct inode_t {
+private:
+    pthread_mutex_t metalock;
+    pthread_mutex_t datelock;
+    std::map<std::string, inode_t*> child;
+public:
+    cache_type type = cache_type::status;
+    struct stat st;
 #define SYNCED         1                        //是否已同步
-#define TRANSF         2                        //是否正在同步
-#define DELETE         4                        //是否被标记删除
-#define RELEASE        8                        //是否被标记释放
-#define REOPEN        16                        //是否同步时被重新打开过
-#define ONDELE        32                        //正在被删除或者释放
-#define ENCRYPT       64                        //加密文件
-    volatile unsigned char flags;
-}filedec;
+#define ENCRYPT        2                        //加密文件
+    uint32_t flag = 0;
+    uint32_t opened = 0;
+    rfcache* rcache = nullptr;
+    wfcache* wcache = nullptr;
+    inode_t(inode_t *parent);
+    ~inode_t();
+    bool empty();
+    inode_t* mknode(const std::string& path);
+    void addchildstat(const std::string& path, struct stat st);
+    inode_t* getnode(const std::string& path);
+    struct stat getstat(const std::string& path);
+    void move(const std::string& path);
+    std::string getcwd();
+    std::string getname();
+    int filldir(void *buff, fuse_fill_dir_t filler);
+    int lockmeta();
+    int unlockmeta();
+    int lockdate();
+    int unlockdate();
+    void remove();
+    void release();
+};
 
-
-typedef void (*eachfunc)(filedec *f);
+typedef void (*eachfunc)(inode_t* node);
 
 size_t GetWriteBlkStartPoint(size_t b);
 size_t GetWriteBlkEndPoint(size_t b);
@@ -81,21 +87,13 @@ size_t GetWriteBlkNo(size_t p);
 size_t GetWriteBlkEndPointFromP(size_t p);
 #define GetWriteBlkSize(b)  ((b)<WBC/2?LWBS:HWBS)
 
-void initcache();
+inode_t* newfnode(const char *path, cache_type type);
+inode_t* getnode(const char *path);
+void addstat(const char* dir, const char* path, const struct stat* st);
+void invalidcache(const char* path);
+struct stat getstat(const char *path);
+inode_t* rmcache(const char *path);
 void renamecache(const char *oldname,const char *newname);
-void fcachesync(filedec *f);
-
-
-filedec * newfcache(const char *path);
-int freefcache(filedec *f);
-void addfcache(filedec *f);
-filedec *getfcache(const char *path);
-void eachfcache(eachfunc func);
-void filldir(const char *path,void *buf,fuse_fill_dir_t filler);
-
-void addscache(const char* path, const struct stat* st);
-struct stat getscache(const char *path);
-void rmscache(const char *path);
 
 
 #ifdef  __cplusplus
