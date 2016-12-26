@@ -6,6 +6,7 @@
 
 #include "cache.h"
 #include "baiduapi.h"
+#include "job.h"
 
 
 using namespace std;
@@ -166,6 +167,7 @@ inode_t::~inode_t(){
     pthread_mutex_destroy(&datelock);
     delete rcache;
     delete wcache;
+    del_job((job_func)cache_close, this);
 }
 
 bool inode_t::empty(){
@@ -173,26 +175,10 @@ bool inode_t::empty(){
     return child.size() == 1;
 }
 
-inode_t* inode_t::mknode(const string& path) {
-    if(path == "." || path == "/") {
-        return this;
-    } else {
-        assert(wcache == nullptr && rcache == nullptr && type == cache_type::status);
-        string subpath = subname(path);
-        string child_name = childname(path);
-        if(child.count(child_name) == 0) {
-            inode_t* i = new inode_t(this);
-            child[child_name] = i;
-        }
-        return child[child_name]->mknode(subpath);
-    }
-}
-
 void inode_t::addchildstat(const string& path, struct stat st) {
     lockmeta();
     assert(basename(path) == path);
     assert(wcache == nullptr && rcache == nullptr && type == cache_type::status);
-    flag |= SYNCED;
     if(child.count(path) == 0) {
         inode_t* i = new inode_t(this);
         child[path] = i;
@@ -201,7 +187,7 @@ void inode_t::addchildstat(const string& path, struct stat st) {
     unlockmeta();
 }
 
-inode_t* inode_t::getnode(const string& path) {
+inode_t* inode_t::getnode(const string& path, bool create) {
     if(path == "." || path == "/") {
         return this;
     } else {
@@ -209,9 +195,14 @@ inode_t* inode_t::getnode(const string& path) {
         string subpath = subname(path);
         string child_name = childname(path);
         if(child.count(child_name) == 0) {
-            return nullptr;
+            if(create){
+                inode_t* i = new inode_t(this);
+                child[child_name] = i;
+            }else{
+                return nullptr;
+            }
         }
-        return child[child_name]->getnode(subpath);
+        return child[child_name]->getnode(subpath, create);
     }
 }
 struct stat inode_t::getstat(const string& path) {
@@ -304,13 +295,15 @@ void inode_t::release(){
         if( st.st_nlink == 0){
             delete this;
             return;
+        }else{
+            add_job(job_func(cache_close), this, 300);
         }
     }
     unlockmeta();
 }
 
 void inode_t::move(const string& path){
-    inode_t* p = super_node.getnode(dirname(path));
+    inode_t* p = super_node.getnode(dirname(path), true);
     lockmeta();
     assert(child.count(".."));
     child[".."]->child.erase(getname());
@@ -320,10 +313,12 @@ void inode_t::move(const string& path){
 }
 
 int inode_t::lockmeta(){
+    fprintf(stderr, "inode lock meta: %s\n", getname().c_str());
     return pthread_mutex_lock(&metalock);
 }
 
 int inode_t::unlockmeta(){
+    fprintf(stderr, "inode unlock meta: %s\n", getname().c_str());
     return pthread_mutex_unlock(&metalock);
 }
 
@@ -335,26 +330,9 @@ int inode_t::unlockdate(){
     return pthread_mutex_unlock(&datelock);
 }
 
-//获得一个初始化好的fcache,如果创建成功，此fcache 会被自动加入缓存中
-inode_t* newfnode(const char *path, cache_type type) {
+inode_t* getnode(const char *path, bool create){
     super_node.lockmeta();
-    inode_t* node = super_node.mknode(path);
-    assert(node->type == cache_type::status);
-    if(type == cache_type::read){
-        node->rcache = new rfcache();
-    }
-    if(type == cache_type::write){
-        node->wcache = new wfcache();
-    }
-    node->type = type;
-    node->opened = 1;
-    super_node.unlockmeta();
-    return node;
-}
-
-inode_t* getnode(const char *path){
-    super_node.lockmeta();
-    inode_t* node = super_node.getnode(path);
+    inode_t* node = super_node.getnode(path, create);
     if(node){
         node->lockmeta();
     }
@@ -362,38 +340,6 @@ inode_t* getnode(const char *path){
     return node;
 }
 
-
-/* 释放filedec结构体，并从缓存中删除，必须没有被打开，
- * 且没有在同步，即TRANSF标志未置位
- * 否则直接取消ONDELE标志并返回，什么都不干
- * 调用时如果该文件未同步并且是到期释放的就调用fcachesync先同步
- * 成功返回0
- */
-/*
-int releasenode(inode_t *node) {
-    assert(node->type != cache_type::status);
-    pthread_mutex_lock(&node->lock);
-    if (node->opened == 0 && (node->flag & TRANSF) == 0) {
-        if ((node->flag & RELEASE) && (node->flag & SYNCED) == 0) {
-            filesync(node);
-        }
-        pthread_mutex_destroy(&node->lock);
-        close(node->fd);
-        delete node;
-        return 0;
-    }
-    pthread_mutex_unlock(&node->lock);
-    return 1;
-}
-*/
-
-
-void addstat(const char *dir, const char *path, const struct stat* st) {
-    super_node.lockmeta();
-    inode_t *node = super_node.mknode(dir);
-    node->addchildstat(path, *st);
-    super_node.unlockmeta();
-}
 
 struct stat getstat(const char *path) {
     super_node.lockmeta();
@@ -405,7 +351,7 @@ struct stat getstat(const char *path) {
 
 void invalidcache(const char* path){
     super_node.lockmeta();
-    inode_t* node = super_node.getnode(dirname(path));
+    inode_t* node = super_node.getnode(dirname(path), false);
     if(node){
         node->lockmeta();
         node->flag &= ~SYNCED;
@@ -416,7 +362,7 @@ void invalidcache(const char* path){
 
 inode_t* rmcache(const char *path) {
     super_node.lockmeta();
-    inode_t* node = super_node.getnode(path);
+    inode_t* node = super_node.getnode(path, false);
     if(node){
         node->remove();
     }
@@ -427,9 +373,32 @@ inode_t* rmcache(const char *path) {
 
 void renamecache(const char *oldname, const char *newname) {
     super_node.lockmeta();
-    inode_t* node = super_node.getnode(oldname);
+    inode_t* node = super_node.getnode(oldname, false);
     if(node){
         node->move(newname);
     }
     super_node.unlockmeta();
+}
+
+void cache_close(inode_t* node){
+    node->lockmeta();
+    node->lockdate();
+    if(node->opened == 0){
+        assert(node->flag & SYNCED );
+        assert(node->type != cache_type::status);
+        if(node->wcache){
+            delete node->wcache;
+            node->wcache = nullptr;
+        }
+        if(node->rcache){
+            delete node->rcache;
+            node->rcache = nullptr;
+        }
+        node->type = cache_type::status;
+        node->st.st_mode = S_IFREG | 0444;
+    }
+    del_job((job_func)cache_close, node);
+    node->unlockdate();
+    node->unlockmeta();
+    return;
 }

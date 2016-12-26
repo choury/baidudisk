@@ -63,9 +63,8 @@ public:
     inode_t(inode_t *parent);
     ~inode_t();
     bool empty();
-    inode_t* mknode(const std::string& path);
     void addchildstat(const std::string& path, struct stat st);
-    inode_t* getnode(const std::string& path);
+    inode_t* getnode(const std::string& path, bool create);
     struct stat getstat(const std::string& path);
     void move(const std::string& path);
     std::string getcwd();
@@ -77,6 +76,7 @@ public:
     int unlockdate();
     void remove();
     void release();
+    friend void inode_release(inode_t* node);
 };
 
 typedef void (*eachfunc)(inode_t* node);
@@ -87,13 +87,12 @@ size_t GetWriteBlkNo(size_t p);
 size_t GetWriteBlkEndPointFromP(size_t p);
 #define GetWriteBlkSize(b)  ((b)<WBC/2?LWBS:HWBS)
 
-inode_t* newfnode(const char *path, cache_type type);
-inode_t* getnode(const char *path);
-void addstat(const char* dir, const char* path, const struct stat* st);
+inode_t* getnode(const char *path, bool create);
 void invalidcache(const char* path);
 struct stat getstat(const char *path);
 inode_t* rmcache(const char *path);
 void renamecache(const char *oldname,const char *newname);
+void cache_close(inode_t* node);
 
 
 #ifdef  __cplusplus

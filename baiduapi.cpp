@@ -23,6 +23,7 @@
 #include "threadpool.h"
 #include "cache.h"
 #include "net.h"
+#include "job.h"
 
 
 static const char *basepath = "/apps/Native";
@@ -144,6 +145,13 @@ static size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p
     memcpy(buffer, bs->buf + bs->offset, len);
     bs->offset += len;
     return len;
+}
+
+void job_handle(){
+    while(true){
+        uint32_t t = do_job();
+        sleep(t>30?30:t);
+    }
 }
 
 
@@ -485,6 +493,7 @@ void *baiduapi_init(struct fuse_conn_info *conn)
     char basedir[PATHLEN];
     sprintf(basedir,"%s/.baidudisk",getenv("HOME"));
     mkdir(basedir,S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    addtask((taskfunc)job_handle, nullptr, 0);
     return NULL;
 }
 
@@ -599,15 +608,13 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
 
-    inode_t* node = getnode(path);
-    if(node){
-        assert(node->type == cache_type::status);
-        if(node->filldir(buf, filler)){
-            node->unlockmeta();
-            return 0;
-        }
+    inode_t* node = getnode(path, true);
+    assert(node->type == cache_type::status);
+    if(node->filldir(buf, filler)){
         node->unlockmeta();
+        return 0;
     }
+    node->unlockmeta();
 
     char buff[2048];
     char fullpath[PATHLEN];
@@ -675,8 +682,8 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
     json_object *jlist;
     json_object_object_get_ex(json_get, "list",&jlist);
     
-    int i;
-    for (i = 0; i < json_object_array_length(jlist); ++i) {
+    node->lockmeta();
+    for (int i = 0; i < json_object_array_length(jlist); ++i) {
         json_object *filenode = json_object_array_get_idx(jlist, i);
         
         json_object *jmtime;
@@ -707,10 +714,10 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
         json_object_object_get_ex(filenode, "path",&jpath);
         const char *childname = json_object_get_string(jpath) + pathlen;
         filler(buf, childname, &st, 0);
-        if(node){
-            node->addchildstat(childname, st);
-        }
+        node->addchildstat(childname, st);
     }
+    node->flag |= SYNCED;
+    node->unlockmeta();
 
     json_object_put(json_get);
     return 0;
@@ -787,8 +794,7 @@ int baiduapi_statfs(const char *path, struct statvfs *sf)
 
 
 //自猜
-int baiduapi_mkdir(const char *path, mode_t mode)
-{
+int baiduapi_mkdir(const char *path, mode_t mode) {
     (void) mode;
     char buff[2048];
     char fullpath[PATHLEN];
@@ -917,7 +923,7 @@ int baiduapi_unlink(const char *path) {
 
 //删除文件夹
 int baiduapi_rmdir(const char *path) {
-    inode_t* node = getnode(path);
+    inode_t* node = getnode(path, false);
     if(node){
         if(node->flag & SYNCED){
             assert(node->type == cache_type::status);
@@ -1064,13 +1070,15 @@ int baiduapi_rename(const char *oldname, const char *newname) {
 //创建一个文件，并把它加到filelist里面
 int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     (void) mode;
-    inode_t *node = newfnode(path, cache_type::write);
-    if (node == NULL) {
-        int lasterrno = errno;
-        errorlog("Init fcache error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
-
+    inode_t *node = getnode(path, true);
+    assert(node->type == cache_type::status);
+    assert(node->opened == 0);
+    assert(node->wcache == nullptr && node->rcache == nullptr);
+    
+    node->wcache = new wfcache();
+    node->type = cache_type::write;
+    node->opened = 1;
+    
     node->st.st_ino  = 1;
     node->st.st_nlink = 1;
     node->st.st_size = 0;
@@ -1080,6 +1088,7 @@ int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     node->wcache->flags[0] = WF_DIRTY;
 
     fi->fh = (uint64_t) node;
+    node->unlockmeta();
     return 0;
 }
 
@@ -1092,7 +1101,7 @@ int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
  */
 int baiduapi_open(const char *path, struct fuse_file_info *fi) {
     struct stat st;
-    inode_t* node = getnode(path);
+    inode_t* node = getnode(path, false);
     if (node) {
         switch(node->type){
         case cache_type::read:
@@ -1116,15 +1125,17 @@ int baiduapi_open(const char *path, struct fuse_file_info *fi) {
         }
     }
     if ((fi->flags & O_ACCMODE) == O_RDONLY) {
-        inode_t *node = newfnode(path, cache_type::read);
-        if (node == NULL) {
-            int lasterrno = errno;
-            errorlog("Init fcache error:%s\n", strerror(errno));
-            return -lasterrno;
-        }
-
+        inode_t *node = getnode(path, true);
+        assert(node->type == cache_type::status);
+        assert(node->opened == 0);
+        assert(node->wcache == nullptr && node->rcache == nullptr);
+        
+        node->rcache = new rfcache();
+        node->type = cache_type::read;
+        node->opened = 1;
         node->st  = st;
         fi->fh = (uint64_t) node;
+        node->unlockmeta();
         return 0;
     }
     return -EACCES;
@@ -1384,12 +1395,15 @@ int filesync(inode_t *node){
             node->unlockdate();
             time(&node->st.st_mtime);
         } else {
+            node->lockdate();
             int done = 0;
             while (!done) {
                 done = 1;
                 for (size_t i = 0; i <= GetWriteBlkNo(node->st.st_size); ++i) {
                     if (node->wcache->taskid[i]) {
+                        node->unlockdate();
                         waittask(node->wcache->taskid[i]);
+                        node->lockdate();
                     }
                     if (node->st.st_nlink && (node->wcache->flags[i] & WF_DIRTY)) {
                         block *b = (block *)malloc(sizeof(block));
@@ -1401,6 +1415,7 @@ int filesync(inode_t *node){
                 }
             }
             while (baiduapi_mergertmpfile(node->getcwd().c_str(), node));
+            node->unlockdate();
             time(&node->st.st_mtime);
         }
         break;
@@ -1481,7 +1496,7 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
 
 //截断一个文件，只能截断读缓存中的文件，因为只有这种文件是可写的
 int baiduapi_truncate(const char * path, off_t offset) {
-    inode_t *node = getnode(path);
+    inode_t *node = getnode(path, false);
 
     if (node) {
         node->flag &= ~SYNCED;
