@@ -175,7 +175,7 @@ bool inode_t::empty(){
     return child.size() == 1;
 }
 
-void inode_t::addchildstat(const string& path, struct stat st) {
+void inode_t::add_cache(const string& path, struct stat st) {
     lockmeta();
     assert(basename(path) == path);
     assert(wcache == nullptr && rcache == nullptr && type == cache_type::status);
@@ -183,7 +183,25 @@ void inode_t::addchildstat(const string& path, struct stat st) {
         inode_t* i = new inode_t(this);
         child[path] = i;
     }
-    child[path]->st = st;
+    if(child[path]->type != cache_type::write){
+        child[path]->st = st;
+    }
+    unlockmeta();
+}
+
+void inode_t::clear_cache(){
+    lockmeta();
+    for(auto i = child.begin(); i!= child.end();){
+        if(i->first == ".."){
+            i++;
+            continue;
+        }
+        if(i->second->type == cache_type::status){
+            i = child.erase(i);
+        }else{
+            i++;
+        }
+    }
     unlockmeta();
 }
 
@@ -253,14 +271,22 @@ int inode_t::filldir(void *buff, fuse_fill_dir_t filler){
     int all = flag & SYNCED;
     for (auto i : child) {
         if(i.first == ".."){
+            if(i.second){
+                filler(buff, "..", &i.second->st, 0);
+            }else{
+                assert(this == &super_node);
+                filler(buff, "..", nullptr, 0);
+            }
             continue;
-        }else if(all){
+        }
+        if(all){
             filler(buff, i.first.c_str(), &i.second->st, 0);
         }else if(i.second->wcache && (i.second->flag & SYNCED) == 0){
             assert(i.second->type == cache_type::write);
             filler(buff, i.first.c_str(), &i.second->st, 0);
         }
     } 
+    filler(buff, ".", &st, 0);
     return all;
 }
 
@@ -313,12 +339,10 @@ void inode_t::move(const string& path){
 }
 
 int inode_t::lockmeta(){
-    fprintf(stderr, "inode lock meta: %s\n", getname().c_str());
     return pthread_mutex_lock(&metalock);
 }
 
 int inode_t::unlockmeta(){
-    fprintf(stderr, "inode unlock meta: %s\n", getname().c_str());
     return pthread_mutex_unlock(&metalock);
 }
 
@@ -346,18 +370,6 @@ struct stat getstat(const char *path) {
     struct stat st = super_node.getstat(path);
     super_node.unlockmeta();
     return st;
-}
-
-
-void invalidcache(const char* path){
-    super_node.lockmeta();
-    inode_t* node = super_node.getnode(dirname(path), false);
-    if(node){
-        node->lockmeta();
-        node->flag &= ~SYNCED;
-        node->unlockmeta();
-    }
-    super_node.unlockmeta();
 }
 
 inode_t* rmcache(const char *path) {

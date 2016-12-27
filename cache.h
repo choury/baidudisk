@@ -16,11 +16,11 @@ extern "C" {
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
 #define RBC            (uint64_t)20480            //读缓存个数, 最多20G
 #define WBC            (uint64_t)1024             //写缓存分块个数，百度定的，最大1024
-#define MAXCACHE       50
+#define MAXCACHE       20
     
-#define PATHLEN        1024    
+#define PATHLEN        1024
 
-                    
+
 
 struct rfcache{
     int fd;
@@ -63,7 +63,8 @@ public:
     inode_t(inode_t *parent);
     ~inode_t();
     bool empty();
-    void addchildstat(const std::string& path, struct stat st);
+    void add_cache(const std::string& path, struct stat st);
+    void clear_cache();
     inode_t* getnode(const std::string& path, bool create);
     struct stat getstat(const std::string& path);
     void move(const std::string& path);
@@ -87,8 +88,10 @@ size_t GetWriteBlkNo(size_t p);
 size_t GetWriteBlkEndPointFromP(size_t p);
 #define GetWriteBlkSize(b)  ((b)<WBC/2?LWBS:HWBS)
 
+std::string dirname(const std::string& path);
+std::string baseame(const std::string& path);
+
 inode_t* getnode(const char *path, bool create);
-void invalidcache(const char* path);
 struct stat getstat(const char *path);
 inode_t* rmcache(const char *path);
 void renamecache(const char *oldname,const char *newname);

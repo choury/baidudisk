@@ -488,7 +488,7 @@ int refreshtoken()
 //初始化，没什么好说的……
 void *baiduapi_init(struct fuse_conn_info *conn)
 {
-    sem_init(&wcache_sem, 0, MAXCACHE);
+    sem_init(&wcache_sem, 0, MAXCACHE/2);
     creatpool(THREADS);
     char basedir[PATHLEN];
     sprintf(basedir,"%s/.baidudisk",getenv("HOME"));
@@ -498,8 +498,7 @@ void *baiduapi_init(struct fuse_conn_info *conn)
 }
 
 //获得文件属性……
-int baiduapi_getattr(const char *path, struct stat *st)
-{
+int baiduapi_getattr(const char *path, struct stat *st) {
     if (strcmp(path, "/") == 0) {                   //根目录，直接返回，都根目录了，你还查什么查啊，还一直查，说你呢，fuse
         st->st_mode = S_IFDIR | 0755;
         return 0;
@@ -576,11 +575,11 @@ int baiduapi_getattr(const char *path, struct stat *st)
     
     json_object *jmtime;
     json_object_object_get_ex(filenode, "mtime",&jmtime);
-    st->st_mtim.tv_sec = json_object_get_int64(jmtime);
+    st->st_mtime = json_object_get_int64(jmtime);
     
     json_object *jctime;
     json_object_object_get_ex(filenode, "ctime",&jctime);
-    st->st_ctim.tv_sec = json_object_get_int64(jctime);
+    st->st_ctime = json_object_get_int64(jctime);
     
     json_object *jfs_id;
     json_object_object_get_ex(filenode, "fs_id",&jfs_id);
@@ -598,6 +597,9 @@ int baiduapi_getattr(const char *path, struct stat *st)
         st->st_mode = S_IFREG | 0444;
     }
     json_object_put(json_get);
+    inode_t *node = getnode(dirname(path).c_str(), false);
+    node->add_cache(basename(path), *st);
+    node->unlockmeta();
     return 0;
 }
 
@@ -605,9 +607,6 @@ int baiduapi_getattr(const char *path, struct stat *st)
 int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
     (void) offset;
-    filler(buf, ".", NULL, 0);
-    filler(buf, "..", NULL, 0);
-
     inode_t* node = getnode(path, true);
     assert(node->type == cache_type::status);
     if(node->filldir(buf, filler)){
@@ -683,6 +682,7 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
     json_object_object_get_ex(json_get, "list",&jlist);
     
     node->lockmeta();
+    node->clear_cache();
     for (int i = 0; i < json_object_array_length(jlist); ++i) {
         json_object *filenode = json_object_array_get_idx(jlist, i);
         
@@ -714,7 +714,7 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
         json_object_object_get_ex(filenode, "path",&jpath);
         const char *childname = json_object_get_string(jpath) + pathlen;
         filler(buf, childname, &st, 0);
-        node->addchildstat(childname, st);
+        node->add_cache(childname, st);
     }
     node->flag |= SYNCED;
     node->unlockmeta();
@@ -849,8 +849,25 @@ int baiduapi_mkdir(const char *path, mode_t mode) {
         return handleerror(errorno);
     }
 
+    inode_t *node = getnode(dirname(path).c_str(), false);
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    json_object *jfs_id;
+    json_object_object_get_ex(json_get, "fs_id",&jfs_id);
+    st.st_ino = json_object_get_int64(jfs_id);
+    
+    json_object *jmtime;
+    json_object_object_get_ex(json_get, "mtime",&jmtime);
+    st.st_mtime = json_object_get_int64(jmtime);
+    
+    json_object *jctime;
+    json_object_object_get_ex(json_get, "ctime",&jctime);
+    st.st_ctime = json_object_get_int64(jctime);
+    
+    st.st_mode = S_IFDIR | 0755;
     json_object_put(json_get);
-    invalidcache(path);
+    node->add_cache(basename(path), st);
+    node->unlockmeta();
     return 0;
 }
 
@@ -1170,7 +1187,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
     if(node->type ==  cache_type::read){
         node->lockdate();
         int c = offset / RBS;  //计算一下在哪个块
-        for (int i = 0; i < MAXCACHE; ++i) {             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
+        for (int i = 0; i < MAXCACHE/2; ++i) {             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
             size_t p = i + c;
             if (p <= node->st.st_size / RBS &&
                 node->rcache->taskid[p] == 0 &&
@@ -1194,7 +1211,6 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
         size_t len = Min(size, (c + 1) * RBS - offset);      //计算最长能读取的字节
         ssize_t ret = pread(node->rcache->fd, buf, len, offset);
         node->unlockdate();
-
         if (ret != (ssize_t)len) {                   //读取出错了
             return ret;
         }
@@ -1209,10 +1225,10 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
 
         return ret;                         //成功返回
     }else{
-        node->unlockmeta();
         node->lockdate();
         ssize_t ret = pread(node->wcache->fd,buf, size, offset);
         node->unlockdate();
+        node->unlockmeta();
         return ret;
     }
 }
@@ -1301,13 +1317,6 @@ int baiduapi_mergertmpfile(const char *path, inode_t *node) {
              "path=%s&"
              "ondup=overwrite"
              , Access_Token, URLEncode(fullpath));
-    FILE *tpfile = tmpfile();
-
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
 
     json_object *jobj = json_object_new_object();
     json_object *jarray = json_object_new_array();
@@ -1327,10 +1336,15 @@ int baiduapi_mergertmpfile(const char *path, inode_t *node) {
     if (r == NULL) {
         int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        fclose(tpfile);
         return -lasterrno;
     }
 
+    FILE *tpfile = tmpfile();
+    if (!tpfile) {
+        int lasterrno = errno;
+        errorlog("create temp file error:%s\n", strerror(errno));
+        return -lasterrno;
+    }
     r->method = Httprequest::post_x_www_form_urlencoded;
     r->readfunc = readfrombuff;
     r->readprame = &bs;
@@ -1379,23 +1393,23 @@ int filesync(inode_t *node){
         node->unlockmeta();
         return 0;
     }
+    node->lockdate();
     switch (node->type) {
     case cache_type::read:
         for (size_t i = 0; i <= GetWriteBlkNo(node->st.st_size); ++i) {
             if (node->rcache->taskid[i]) {
+                node->unlockdate();
                 waittask(node->rcache->taskid[i]);
+                node->lockdate();
             }
         }
         break;
     case cache_type::write:
         if ((size_t)node->st.st_size < LWBS) {
-            node->lockdate();
             while (baiduapi_uploadfile(node->wcache->fd, node->getcwd().c_str()));
             node->wcache->flags[0] = 0;
-            node->unlockdate();
             time(&node->st.st_mtime);
         } else {
-            node->lockdate();
             int done = 0;
             while (!done) {
                 done = 1;
@@ -1415,13 +1429,13 @@ int filesync(inode_t *node){
                 }
             }
             while (baiduapi_mergertmpfile(node->getcwd().c_str(), node));
-            node->unlockdate();
             time(&node->st.st_mtime);
         }
         break;
     case cache_type::status:
         assert(0);
     }
+    node->unlockdate();
     node->flag |= SYNCED;
     node->unlockmeta();
     return 0;
@@ -1445,16 +1459,24 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
     inode_t* node = (inode_t *) fi->fh;
     int c = GetWriteBlkNo(offset);   //计算一下在哪个块
     int len = Min(size, GetWriteBlkEndPointFromP(offset) - offset);      //计算最长能写入的字节
+    node->lockmeta();
     if(node->type == cache_type::write) {
         if(offset > node->st.st_size) {
             baiduapi_truncate(path, offset);
         }
         if (c && (node->wcache->flags[c] & WF_DIRTY) == 0) {
+            node->unlockmeta();
             sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
+            node->lockmeta();
         }
-        node->lockdate();
         node->flag &= ~SYNCED;
+        node->lockdate();
         ssize_t ret = pwrite(node->wcache->fd,buf, len, offset);
+        
+        if (ret + offset > node->st.st_size) {      //文件长度被扩展
+            node->st.st_size = ret + offset;
+        }
+        
         node->wcache->flags[c] |= WF_DIRTY;
         if (node->wcache->flags[c] & WF_TRANS) {
             node->wcache->flags[c] |= WF_REOPEN;
@@ -1471,15 +1493,12 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
             }
         }
         node->unlockdate();
-
-        if (ret != len) {                   //写入出错
+        node->unlockmeta();
+        
+        if (ret != len) {                   //返回真实写入长度
             return ret;
         }
-
-        if (ret + offset > node->st.st_size) {      //文件长度被扩展
-            node->st.st_size = ret + offset;
-        }
-
+        
         if ((size_t)len < size) {                   //需要写入下一个block
             int tmp = baiduapi_write(path, buf + len, size - len, offset + len, fi);
             if (tmp < 0) {                  //调用出错
@@ -1489,9 +1508,11 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
             }
         }
         return ret;
+    }else{
+        node->unlockmeta();
+        errno = EPERM;
+        return errno;
     }
-    errno = EPERM;
-    return -errno;
 }
 
 //截断一个文件，只能截断读缓存中的文件，因为只有这种文件是可写的
