@@ -22,7 +22,7 @@ static pthread_mutex_t *lockarray;                      //这个锁用来openssl
 int ( *errorlog )( const char *__restrict fmt, ... );
 
 
-static void lock_callback( int mode, int type, char *file, int line ) {
+static void lock_callback( int mode, int type,const char *file, int line ) {
     ( void )file;
     ( void )line;
 

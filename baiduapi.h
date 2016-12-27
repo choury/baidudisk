@@ -46,9 +46,6 @@ int baiduapi_flush(const char * path, struct fuse_file_info *fi);
 int baiduapi_truncate(const char * path, off_t offset);
 int baiduapi_stub(const char *path);
 
-int baiduapi_uploadfile (int file,const char * path);
-int baiduapi_mergertmpfile(const char * path, struct inode_t* node);
-
 #ifdef  __cplusplus
 }
 #endif

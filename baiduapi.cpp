@@ -488,7 +488,7 @@ int refreshtoken()
 //初始化，没什么好说的……
 void *baiduapi_init(struct fuse_conn_info *conn)
 {
-    sem_init(&wcache_sem, 0, MAXCACHE/2);
+    sem_init(&wcache_sem, 0, MAXCACHE);
     creatpool(THREADS);
     char basedir[PATHLEN];
     sprintf(basedir,"%s/.baidudisk",getenv("HOME"));
@@ -1187,7 +1187,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
     if(node->type ==  cache_type::read){
         node->lockdate();
         int c = offset / RBS;  //计算一下在哪个块
-        for (int i = 0; i < MAXCACHE/2; ++i) {             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
+        for (int i = 0; i < MAXCACHE; ++i) {             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
             size_t p = i + c;
             if (p <= node->st.st_size / RBS &&
                 node->rcache->taskid[p] == 0 &&
@@ -1235,7 +1235,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
 
 
 //上传一个文件
-int baiduapi_uploadfile(int file, const char *path) {
+int baiduapi_uploadfile(const char *path, inode_t* node) {
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath)-1, "%s%s", basepath, path);
@@ -1262,6 +1262,8 @@ int baiduapi_uploadfile(int file, const char *path) {
         return -lasterrno;
     }
 
+    assert(node->type == cache_type::write);
+    int file = node->wcache->fd;
     r->method = Httprequest::post_formdata;
     r->readfunc = readfromfd;
     r->readprame = (void *)(long)file;
@@ -1291,16 +1293,24 @@ int baiduapi_uploadfile(int file, const char *path) {
         errorlog("get error:%s\n", json_object_to_json_string(json_get));
         json_object_put(json_get);
         return handleerror(errorno);
-    }
+    }else{
+        json_object *jmtime;
+        json_object_object_get_ex(json_get, "mtime",&jmtime);
+        node->st.st_mtime = json_object_get_int64(jmtime);
 
-    json_object *jmd5;
-    if (json_object_object_get_ex(json_get, "md5",&jmd5)) {
+        json_object *jctime;
+        json_object_object_get_ex(json_get, "ctime",&jctime);
+        node->st.st_ctime = json_object_get_int64(jctime);
+
+        json_object *jfs_id;
+        json_object_object_get_ex(json_get, "fs_id",&jfs_id);
+        node->st.st_ino = json_object_get_int64(jfs_id);
+
+        json_object *jsize;
+        json_object_object_get_ex(json_get, "size",&jsize);
+        node->st.st_size = json_object_get_int64(jsize);
         json_object_put(json_get);
         return 0;
-    } else {
-        errorlog("Did not get MD5:%s\n" , json_object_to_json_string(json_get));
-        json_object_put(json_get);
-        return -EPROTO;
     }
 }
 
@@ -1326,11 +1336,10 @@ int baiduapi_mergertmpfile(const char *path, inode_t *node) {
     };
 
     json_object_object_add(jobj, "block_list", jarray);
-    char param[35000];
-    snprintf(param, sizeof(param) - 1, "param=%s", json_object_to_json_string(jobj));
+    char param[36000];
+    int len = snprintf(param, sizeof(param) - 1, "param=%s", json_object_to_json_string(jobj));
     json_object_put(jobj);
-    buffstruct bs = {0, strlen(param), param};
-    bs.len = strlen(bs.buf);
+    buffstruct bs = {0, (size_t)len, param};
     Http *r = Httpinit(buff);
 
     if (r == NULL) {
@@ -1374,10 +1383,25 @@ int baiduapi_mergertmpfile(const char *path, inode_t *node) {
         errorlog("body:\n%s\nget:\n%s\n", param, json_object_to_json_string(json_get));
         json_object_put(json_get);
         return handleerror(errorno);
-    }
+    }else{
+        json_object *jmtime;
+        json_object_object_get_ex(json_get, "mtime",&jmtime);
+        node->st.st_mtime = json_object_get_int64(jmtime);
 
-    json_object_put(json_get);
-    return 0;
+        json_object *jctime;
+        json_object_object_get_ex(json_get, "ctime",&jctime);
+        node->st.st_ctime = json_object_get_int64(jctime);
+
+        json_object *jfs_id;
+        json_object_object_get_ex(json_get, "fs_id",&jfs_id);
+        node->st.st_ino = json_object_get_int64(jfs_id);
+
+        json_object *jsize;
+        json_object_object_get_ex(json_get, "size",&jsize);
+        node->st.st_size = json_object_get_int64(jsize);
+        json_object_put(json_get);
+        return 0;
+    }
 }
 
 
@@ -1406,7 +1430,7 @@ int filesync(inode_t *node){
         break;
     case cache_type::write:
         if ((size_t)node->st.st_size < LWBS) {
-            while (baiduapi_uploadfile(node->wcache->fd, node->getcwd().c_str()));
+            while(baiduapi_uploadfile(node->getcwd().c_str(), node));
             node->wcache->flags[0] = 0;
             time(&node->st.st_mtime);
         } else {

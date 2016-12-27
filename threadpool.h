@@ -4,7 +4,7 @@
 #ifndef __THREADPOOL_H__
 #define __THREADPOOL_H__
 
-#define THREADS 20
+#define THREADS 30
 
 //TODO 没有销毁线程池的操作……
 
