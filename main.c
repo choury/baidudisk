@@ -11,25 +11,28 @@
 
 char confpath[1024];
 
-struct fuse_operations baiduapi_oper = {
-    .init       = baiduapi_init,
-    .getattr    = baiduapi_getattr,
-    .readdir    = baiduapi_readdir,
-    .mkdir      = baiduapi_mkdir,
-    .unlink     = baiduapi_unlink,
-    .rmdir      = baiduapi_rmdir,
-    .rename     = baiduapi_rename,
-    .statfs     = baiduapi_statfs,
-    .open       = baiduapi_open,
-    .read       = baiduapi_read,
-    .create     = baiduapi_create,
-    .write      = baiduapi_write,
-    .release    = baiduapi_release,
-    .truncate   = baiduapi_truncate,
-    .fsync      = baiduapi_fsync,
-    .flush      = baiduapi_flush,
-    .access     = baiduapi_stub,
-    .utimens    = baiduapi_stub,
+struct fuse_operations baidu_oper = {
+    .init       = baidu_init,
+    .destroy    = baidu_destroy,
+    .getattr    = baidu_getattr,
+    .fgetattr   = baidu_fgetattr,
+    .readdir    = baidu_readdir,
+    .mkdir      = baidu_mkdir,
+    .unlink     = baidu_unlink,
+    .rmdir      = baidu_rmdir,
+    .rename     = baidu_rename,
+    .statfs     = baidu_statfs,
+    .open       = baidu_open,
+    .read       = baidu_read,
+    .create     = baidu_create,
+    .write      = baidu_write,
+    .release    = baidu_release,
+    .ftruncate  = baidu_ftruncate,
+    .truncate   = baidu_truncate,
+    .fsync      = baidu_fsync,
+    .flush      = baidu_flush,
+    .access     = baidu_stub,
+    .utimens    = baidu_stub,
 };
 
 
@@ -37,5 +40,5 @@ int main(int argc, char *argv[]) {
     netinit();                          //初始化网络
     sprintf(confpath, "%s/.baidudisk", getenv("HOME"));
     while(gettoken());                  //取得access_token
-    return fuse_main(argc, argv, &baiduapi_oper,NULL);
+    return fuse_main(argc, argv, &baidu_oper,NULL);
 }

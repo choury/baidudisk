@@ -7,14 +7,14 @@
 #include "cache.h"
 #include "baiduapi.h"
 #include "job.h"
+#include "utils.h"
 
 
 using namespace std;
 
 
 //在家目录.baidudisk目录下生成临时缓存文件
-static int tempfile()
-{
+static int tempfile() {
     int fd;
     char tmpfilename[PATHLEN];
     sprintf(tmpfilename, "%s/NativeXXXXXX", confpath);
@@ -75,6 +75,9 @@ string basename(const string& path) {
     if(pos == string::npos) {
         return path;
     }
+    if(path.length() == 1){
+        return path;
+    }
     if(pos == path.length() -1 ) {
         string path_truncate = path.substr(0, path.length()-1);
         return basename(path_truncate);
@@ -86,6 +89,9 @@ string dirname(const string& path) {
     size_t pos = path.find_last_of("/");
     if(pos == string::npos) {
         return ".";
+    }
+    if(path.length() == 1){
+        return path;
     }
     if(pos == path.length() -1 ) {
         string path_truncate = path.substr(0, path.length()-1);
@@ -116,6 +122,18 @@ string subname(const string& path) {
         return subname(path_truncate);
     }
     return path.substr(pos+1, path.length());
+}
+
+bool endwith(const string& s1, const string& s2){
+    auto l1 = s1.length();
+    auto l2 = s2.length();
+    if(l1 < l2)
+        return 0;
+    return !memcmp(s1.data()+l1-l2, s2.data(), l2);
+}
+
+string encodepath(const string& path){
+    return dirname(path)+Base64Encode(basename(path).c_str()) + ".enc";
 }
 
 rfcache::rfcache(){
@@ -175,18 +193,30 @@ bool inode_t::empty(){
     return child.size() == 1;
 }
 
-void inode_t::add_cache(const string& path, struct stat st) {
+const char* inode_t::add_cache(string path, struct stat st) {
     lockmeta();
+    int encrypted = 0;
     assert(basename(path) == path);
+    if(path == "." || path == "/"){
+        this->st = st;
+        unlockmeta();
+        return path.c_str();
+    }
+    if(S_ISREG(st.st_mode) && endwith(path, ".enc")){
+        encrypted = ENCRYPT;
+        path = Base64Decode(path.substr(0, path.length()-4).c_str());
+    }
     assert(wcache == nullptr && rcache == nullptr && type == cache_type::status);
     if(child.count(path) == 0) {
         inode_t* i = new inode_t(this);
+        i->flag = encrypted;
         child[path] = i;
     }
     if(child[path]->type != cache_type::write){
         child[path]->st = st;
     }
     unlockmeta();
+    return path.c_str();
 }
 
 void inode_t::clear_cache(){
@@ -223,20 +253,21 @@ inode_t* inode_t::getnode(const string& path, bool create) {
         return child[child_name]->getnode(subpath, create);
     }
 }
-struct stat inode_t::getstat(const string& path) {
+const struct stat* inode_t::getstat(const string& path) {
     if(path == "." || path == "/") {
-        return st;
+        if(flag & SYNCED){
+            return &st;
+        }else{
+            return nullptr;
+        }
     } else {
         string subpath = subname(path);
         string child_name = childname(path);
         auto c = child.find(child_name);
         if(c == child.end()) {
-            struct stat st;
-            st.st_ino = (flag & SYNCED);
-            st.st_mode = 0;
-            return st;
+            return nullptr;
         } else {
-            return child[child_name]->getstat(subpath);
+            return &child[child_name]->st;
         }
     }
 }
@@ -252,12 +283,17 @@ string inode_t::getname(){
             return i.first;
         }
     }
+    assert(0);
     return "";
 }
 
 string inode_t::getcwd(){
     lockmeta();
     string path = getname();
+    if(flag & ENCRYPT){
+        assert(S_ISREG(st.st_mode));
+        path = Base64Encode(path.c_str()) + ".enc";
+    }
     inode_t* p = this;
     while((p = p->child[".."])){
         path = p->getname() +"/"+ path;
@@ -362,34 +398,6 @@ inode_t* getnode(const char *path, bool create){
     }
     super_node.unlockmeta();
     return node;
-}
-
-
-struct stat getstat(const char *path) {
-    super_node.lockmeta();
-    struct stat st = super_node.getstat(path);
-    super_node.unlockmeta();
-    return st;
-}
-
-inode_t* rmcache(const char *path) {
-    super_node.lockmeta();
-    inode_t* node = super_node.getnode(path, false);
-    if(node){
-        node->remove();
-    }
-    super_node.unlockmeta();
-    return node;
-}
-
-
-void renamecache(const char *oldname, const char *newname) {
-    super_node.lockmeta();
-    inode_t* node = super_node.getnode(oldname, false);
-    if(node){
-        node->move(newname);
-    }
-    super_node.unlockmeta();
 }
 
 void cache_close(inode_t* node){

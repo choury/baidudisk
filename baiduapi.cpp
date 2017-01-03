@@ -18,7 +18,7 @@
 
 
 #include "json_object_from_file.h"
-#include "urlcode.h"
+#include "utils.h"
 #include "baiduapi.h"
 #include "threadpool.h"
 #include "cache.h"
@@ -131,10 +131,16 @@ static size_t readfromfile(void *buffer, size_t size, size_t nmemb, void *user_p
     return fread(buffer, size, nmemb, file);
 }
 
-static size_t readfromfd(void *buffer, size_t size, size_t nmemb, void *user_p)
+static size_t readfromfdxor(void *buffer, size_t size, size_t nmemb, void *user_p)
 {
     int fd = (int) (long)user_p;
-    return read(fd,buffer, size*nmemb)/size;
+    size_t offset = lseek(fd, 0, SEEK_CUR);
+    ssize_t len = read(fd, buffer, size*nmemb);
+    if(len <= 0){
+        return len;
+    }
+    xorcode(buffer, offset, len, ak);
+    return len/size;
 }
 
 //你猜
@@ -162,8 +168,7 @@ typedef struct {
 
 
 //从服务器读一个block
-void readblock(block *tb)
-{
+void readblock(block *tb) {
     block b = *tb;
     free(tb);
     size_t startp = b.bno * RBS;
@@ -175,10 +180,10 @@ void readblock(block *tb)
              "method=download&"
              "access_token=%s&"
              "path=%s"
-             , Access_Token, URLEncode(fullpath));
+             , Access_Token, URLEncode(fullpath).c_str());
     char range[100] = {0};
     snprintf(range, sizeof(range) - 1, "%lu-%lu", startp, startp + RBS - 1);
-    char buf[RBS];
+    unsigned char buf[RBS];
     buffstruct bs = {0, RBS, buf};
     Http *r = Httpinit(buff);
 
@@ -199,6 +204,9 @@ void readblock(block *tb)
     }
 
     Httpdestroy(r);
+    if(b.node->flag & ENCRYPT)
+        xorcode(bs.buf, startp, bs.offset, ak);
+    
     b.node->lockdate();
     pwrite(b.node->rcache->fd, bs.buf, bs.offset, startp);
     b.node->rcache->mask[b.bno / 32] |= 1 << (b.bno % 32);
@@ -212,8 +220,7 @@ error:
 }
 
 //上传一个block作为tmpfile
-void uploadblock(block *tb)
-{
+void uploadblock(block *tb) {
     block b = *tb;
     free(tb);
     char buff[1024];
@@ -239,13 +246,14 @@ void uploadblock(block *tb)
             break;
         }
 
-        char *buf = (char *)malloc(GetWriteBlkSize(b.bno));
+        unsigned char *buf = (unsigned char *)malloc(GetWriteBlkSize(b.bno));
         buffstruct bs = {0, GetWriteBlkSize(b.bno), buf};
         b.node->lockdate();
         b.node->wcache->flags[b.bno] |= WF_TRANS;
         bs.len = pread(b.node->wcache->fd, bs.buf, bs.len, GetWriteBlkStartPoint(b.bno));
         b.node->unlockdate();
 
+        xorcode(bs.buf, GetWriteBlkStartPoint(b.bno), bs.len, ak);
         r->method = Httprequest::post_formdata;
         r->readfunc = readfrombuff;
         r->readprame = &bs;
@@ -309,8 +317,7 @@ void uploadblock(block *tb)
  * 我曾经把自己模拟成浏览器手动post用户名密码，开始挺好使的
  * 后来不行了……因为登录次数多了居然要输验证码了！！！
  */
-int gettoken()
-{
+int gettoken() {
     char code[200];
     char buff[1024];
     char ATfile[1024];
@@ -403,8 +410,7 @@ int gettoken()
     return 0;
 }
 
-int refreshtoken()
-{
+int refreshtoken() {
     char buff[1024];
     char ATfile[1024];
     char Refresh_Token[100];
@@ -486,8 +492,7 @@ int refreshtoken()
 }
 
 //初始化，没什么好说的……
-void *baiduapi_init(struct fuse_conn_info *conn)
-{
+void *baidu_init(struct fuse_conn_info *conn) {
     sem_init(&wcache_sem, 0, MAXCACHE);
     creatpool(THREADS);
     char basedir[PATHLEN];
@@ -497,21 +502,24 @@ void *baiduapi_init(struct fuse_conn_info *conn)
     return NULL;
 }
 
+void baidu_destroy (void *){
+    sem_destroy(&wcache_sem);
+}
+
 //获得文件属性……
-int baiduapi_getattr(const char *path, struct stat *st) {
-    if (strcmp(path, "/") == 0) {                   //根目录，直接返回，都根目录了，你还查什么查啊，还一直查，说你呢，fuse
-        st->st_mode = S_IFDIR | 0755;
+int baidu_getattr(const char *path, struct stat *st) {
+    inode_t* node = getnode(dirname(path).c_str(), false);
+    const struct stat *st_get = node->getstat(basename(std::string(path)));
+    if(st_get == nullptr && (node->flag & SYNCED)){
+        node->unlockmeta();
+        return -ENOENT;
+    }
+    node->unlockmeta();
+    if(st_get){
+        memcpy(st, st_get, sizeof(struct stat));
         return 0;
     }
     
-    *st = getstat(path);
-    if (st->st_ino) {
-        if(st->st_mode == 0){
-            return -ENOENT;
-        }else{
-            return 0;
-        }
-    }
     char buff[2048];
     json_object *json_get = 0, *filenode;
     char fullpath[PATHLEN];
@@ -524,7 +532,7 @@ int baiduapi_getattr(const char *path, struct stat *st) {
              "method=meta&"
              "access_token=%s&"
              "path=%s",
-             Access_Token, URLEncode(fullpath));
+             Access_Token, URLEncode(fullpath).c_str());
     FILE *tpfile = tmpfile();
 
     if (!tpfile) {
@@ -564,9 +572,13 @@ int baiduapi_getattr(const char *path, struct stat *st) {
 
     json_object *jerror_code;
     if (json_object_object_get_ex(json_get, "error_code",&jerror_code)) {
-        int errorno = json_object_get_int(jerror_code) ;
+        int errorno = json_object_get_int(jerror_code);
         json_object_put(json_get);
-        return handleerror(errorno);
+        if(errorno == 31066 && !endwith(path, ".enc")){
+            return baidu_getattr(encodepath(path).c_str(), st);
+        }else{
+            return handleerror(errorno);
+        }
     }
 
     json_object *jlist;
@@ -597,14 +609,20 @@ int baiduapi_getattr(const char *path, struct stat *st) {
         st->st_mode = S_IFREG | 0444;
     }
     json_object_put(json_get);
-    inode_t *node = getnode(dirname(path).c_str(), false);
-    node->add_cache(basename(path), *st);
+    node->add_cache(basename(std::string(path)), *st);
+    return 0;
+}
+
+int baidu_fgetattr(const char* path, struct stat* st, struct fuse_file_info* fi){
+    inode_t *node = (inode_t*)fi->fh;
+    node->lockmeta();
+    memcpy(st, &node->st, sizeof(struct stat));
     node->unlockmeta();
     return 0;
 }
 
 //读取目录下面有什么文件
-int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
+int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
     (void) offset;
     inode_t* node = getnode(path, true);
@@ -632,7 +650,7 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
              "method=list&"
              "access_token=%s&"
              "path=%s"
-             , Access_Token, URLEncode(fullpath));
+             , Access_Token, URLEncode(fullpath).c_str());
 
     FILE *tpfile = tmpfile();
 
@@ -713,8 +731,7 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
         json_object *jpath;
         json_object_object_get_ex(filenode, "path",&jpath);
         const char *childname = json_object_get_string(jpath) + pathlen;
-        filler(buf, childname, &st, 0);
-        node->add_cache(childname, st);
+        filler(buf, node->add_cache(childname, st), &st, 0);
     }
     node->flag |= SYNCED;
     node->unlockmeta();
@@ -725,7 +742,7 @@ int baiduapi_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t 
 
 
 //获得文件系统信息，对于百度网盘来说，只有容量是有用的……
-int baiduapi_statfs(const char *path, struct statvfs *sf)
+int baidu_statfs(const char *path, struct statvfs *sf)
 {
     char buff[1025];
     sprintf(buff,
@@ -794,7 +811,7 @@ int baiduapi_statfs(const char *path, struct statvfs *sf)
 
 
 //自猜
-int baiduapi_mkdir(const char *path, mode_t mode) {
+int baidu_mkdir(const char *path, mode_t mode) {
     (void) mode;
     char buff[2048];
     char fullpath[PATHLEN];
@@ -804,7 +821,7 @@ int baiduapi_mkdir(const char *path, mode_t mode) {
              "method=mkdir&"
              "access_token=%s&"
              "path=%s"
-             , Access_Token, URLEncode(fullpath));
+             , Access_Token, URLEncode(fullpath).c_str());
     FILE *tpfile = tmpfile();
 
     if (!tpfile) {
@@ -872,18 +889,25 @@ int baiduapi_mkdir(const char *path, mode_t mode) {
 }
 
 
-//删除文件（不是文件夹）
-int baiduapi_unlink(const char *path) {
+//删除文件（文件夹需使用rmdir）
+int baidu_unlink(const char *path) {
+    struct stat st;
+    baidu_getattr(path, &st);
+    inode_t* node = getnode(path, false);
+    if(node == nullptr){
+        return -ENOENT;
+    }
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, node->getcwd().c_str());
+    node->unlockmeta();
     
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=delete&"
              "access_token=%s&"
              "path=%s"
-             , Access_Token, URLEncode(fullpath));
+             , Access_Token, URLEncode(fullpath).c_str());
     FILE *tpfile = tmpfile();
 
     if (!tpfile) {
@@ -926,20 +950,18 @@ int baiduapi_unlink(const char *path) {
         int errorno = json_object_get_int(jerror_code) ;
         json_object_put(json_get);
         errno = handleerror(errorno);
-        if (errno == -ENOENT && rmcache(path) ) {
-            return 0;
-        } else {
+        if (errno != -ENOENT){
             return errno;
         }
+    }else{
+        json_object_put(json_get);
     }
-
-    json_object_put(json_get);
-    rmcache(path);
+    node->remove();
     return 0;
 }
 
 //删除文件夹
-int baiduapi_rmdir(const char *path) {
+int baidu_rmdir(const char *path) {
     inode_t* node = getnode(path, false);
     if(node){
         if(node->flag & SYNCED){
@@ -960,7 +982,7 @@ int baiduapi_rmdir(const char *path) {
                  "method=list&"
                  "access_token=%s&"
                  "path=%s&limit=0-1"
-                 , Access_Token, URLEncode(fullpath));
+                 , Access_Token, URLEncode(fullpath).c_str());
 
         FILE *tpfile = tmpfile();
 
@@ -1015,18 +1037,29 @@ int baiduapi_rmdir(const char *path) {
         json_object_put(json_get);
     }
 
-    return baiduapi_unlink(path);
+    return baidu_unlink(path);
 }
 
 
 /* 想猜你就继续猜吧
  */
-int baiduapi_rename(const char *oldname, const char *newname) {
+int baidu_rename(const char *oldname, const char *newname) {
+    struct stat st;
+    baidu_getattr(oldname, &st);
+    inode_t *node = getnode(oldname, false);
+    if(node == nullptr){
+        return -ENOENT;
+    }
     char buff[3096];
     char oldfullpath[PATHLEN];
     char newfullpath[PATHLEN];
-    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s", basepath, oldname);
-    snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s", basepath, newname);
+    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s", basepath, node->getcwd().c_str());
+    if(node->flag & SYNCED){
+        snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s", basepath, encodepath(newname).c_str());
+    }else{
+        snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s", basepath, newname);
+    }
+    node->unlockmeta();
 
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -1034,7 +1067,7 @@ int baiduapi_rename(const char *oldname, const char *newname) {
              "access_token=%s&"
              "from=%s&"
              "to=%s"
-             , Access_Token, URLEncode(oldfullpath), URLEncode(newfullpath));
+             , Access_Token, URLEncode(oldfullpath).c_str(), URLEncode(newfullpath).c_str());
     FILE *tpfile = tmpfile();
 
     if (!tpfile) {
@@ -1080,12 +1113,12 @@ int baiduapi_rename(const char *oldname, const char *newname) {
     }
 
     json_object_put(json_get);
-    renamecache(oldname, newname);
+    node->move(newname);
     return 0;
 }
 
 //创建一个文件，并把它加到filelist里面
-int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     (void) mode;
     inode_t *node = getnode(path, true);
     assert(node->type == cache_type::status);
@@ -1095,6 +1128,7 @@ int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     node->wcache = new wfcache();
     node->type = cache_type::write;
     node->opened = 1;
+    node->flag |= ENCRYPT;
     
     node->st.st_ino  = 1;
     node->st.st_nlink = 1;
@@ -1116,7 +1150,7 @@ int baiduapi_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
  * 如果只写，读写打开，这个文件在服务器上存在的话，不行！
  * 否则，返回文件不存在
  */
-int baiduapi_open(const char *path, struct fuse_file_info *fi) {
+int baidu_open(const char *path, struct fuse_file_info *fi) {
     struct stat st;
     inode_t* node = getnode(path, false);
     if (node) {
@@ -1136,7 +1170,7 @@ int baiduapi_open(const char *path, struct fuse_file_info *fi) {
             node->unlockmeta();
         }
     }else{
-        int ret = baiduapi_getattr(path, &st);
+        int ret = baidu_getattr(path, &st);
         if (ret < 0) {
             return ret;
         }
@@ -1161,7 +1195,7 @@ int baiduapi_open(const char *path, struct fuse_file_info *fi) {
 /*
  * 释放一个文件
  */
-int baiduapi_release(const char *path, struct fuse_file_info *fi)
+int baidu_release(const char *path, struct fuse_file_info *fi)
 {
     inode_t *node = (inode_t*) fi->fh;
     node->release();
@@ -1170,7 +1204,7 @@ int baiduapi_release(const char *path, struct fuse_file_info *fi)
 
 
 //读
-int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     inode_t *node = (inode_t *) fi->fh;
     node->lockmeta();
@@ -1216,7 +1250,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
         }
 
         if (len < size) {                   //需要读取下一个block
-            int tmp = baiduapi_read(path, buf + len, size - len, offset + len, fi);
+            int tmp = baidu_read(path, buf + len, size - len, offset + len, fi);
             if (tmp < 0) {                  //调用出错
                 return tmp;
             } else
@@ -1235,7 +1269,7 @@ int baiduapi_read(const char *path, char *buf, size_t size, off_t offset, struct
 
 
 //上传一个文件
-int baiduapi_uploadfile(const char *path, inode_t* node) {
+int baidu_uploadfile(const char *path, inode_t* node) {
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath)-1, "%s%s", basepath, path);
@@ -1245,7 +1279,7 @@ int baiduapi_uploadfile(const char *path, inode_t* node) {
              "access_token=%s&"
              "path=%s&"
              "ondup=overwrite"
-             , Access_Token, URLEncode(fullpath));
+             , Access_Token, URLEncode(fullpath).c_str());
 
     Http *r = Httpinit(buff);
 
@@ -1265,7 +1299,7 @@ int baiduapi_uploadfile(const char *path, inode_t* node) {
     assert(node->type == cache_type::write);
     int file = node->wcache->fd;
     r->method = Httprequest::post_formdata;
-    r->readfunc = readfromfd;
+    r->readfunc = readfromfdxor;
     r->readprame = (void *)(long)file;
     r->length = lseek(file, 0, SEEK_END);
     lseek(file, 0, SEEK_SET);
@@ -1316,7 +1350,7 @@ int baiduapi_uploadfile(const char *path, inode_t* node) {
 
 
 //把上传的临时文件合并成一个文件
-int baiduapi_mergertmpfile(const char *path, inode_t *node) {
+int baidu_mergertmpfile(const char *path, inode_t *node) {
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
@@ -1326,7 +1360,7 @@ int baiduapi_mergertmpfile(const char *path, inode_t *node) {
              "access_token=%s&"
              "path=%s&"
              "ondup=overwrite"
-             , Access_Token, URLEncode(fullpath));
+             , Access_Token, URLEncode(fullpath).c_str());
 
     json_object *jobj = json_object_new_object();
     json_object *jarray = json_object_new_array();
@@ -1339,7 +1373,7 @@ int baiduapi_mergertmpfile(const char *path, inode_t *node) {
     char param[36000];
     int len = snprintf(param, sizeof(param) - 1, "param=%s", json_object_to_json_string(jobj));
     json_object_put(jobj);
-    buffstruct bs = {0, (size_t)len, param};
+    buffstruct bs = {0, (size_t)len, (unsigned char*)param};
     Http *r = Httpinit(buff);
 
     if (r == NULL) {
@@ -1430,7 +1464,7 @@ int filesync(inode_t *node){
         break;
     case cache_type::write:
         if ((size_t)node->st.st_size < LWBS) {
-            while(baiduapi_uploadfile(node->getcwd().c_str(), node));
+            while(baidu_uploadfile(node->getcwd().c_str(), node));
             node->wcache->flags[0] = 0;
             time(&node->st.st_mtime);
         } else {
@@ -1452,7 +1486,7 @@ int filesync(inode_t *node){
                     }
                 }
             }
-            while (baiduapi_mergertmpfile(node->getcwd().c_str(), node));
+            while (baidu_mergertmpfile(node->getcwd().c_str(), node));
             time(&node->st.st_mtime);
         }
         break;
@@ -1465,20 +1499,20 @@ int filesync(inode_t *node){
     return 0;
 }
 
-int baiduapi_fsync(const char *, int , struct fuse_file_info *fi) {
+int baidu_fsync(const char *, int , struct fuse_file_info *fi) {
     inode_t *node = (inode_t *) fi->fh;
     return filesync(node);
 }
 
 
-int baiduapi_flush(const char * path, struct fuse_file_info *fi){
-    return baiduapi_fsync(path, 0, fi);
+int baidu_flush(const char * path, struct fuse_file_info *fi){
+    return baidu_fsync(path, 0, fi);
 }
 /*
  * 写文件，只有本地的文件才可以写，已经传到服务器上的就不能写了
  *
  */
-int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
+int baidu_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     inode_t* node = (inode_t *) fi->fh;
     int c = GetWriteBlkNo(offset);   //计算一下在哪个块
@@ -1486,7 +1520,7 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
     node->lockmeta();
     if(node->type == cache_type::write) {
         if(offset > node->st.st_size) {
-            baiduapi_truncate(path, offset);
+            baidu_truncate(path, offset);
         }
         if (c && (node->wcache->flags[c] & WF_DIRTY) == 0) {
             node->unlockmeta();
@@ -1524,7 +1558,7 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
         }
         
         if ((size_t)len < size) {                   //需要写入下一个block
-            int tmp = baiduapi_write(path, buf + len, size - len, offset + len, fi);
+            int tmp = baidu_write(path, buf + len, size - len, offset + len, fi);
             if (tmp < 0) {                  //调用出错
                 return tmp;
             } else {
@@ -1540,53 +1574,61 @@ int baiduapi_write(const char *path, const char *buf, size_t size, off_t offset,
 }
 
 //截断一个文件，只能截断读缓存中的文件，因为只有这种文件是可写的
-int baiduapi_truncate(const char * path, off_t offset) {
-    inode_t *node = getnode(path, false);
-
-    if (node) {
-        node->flag &= ~SYNCED;
-        int ret = ftruncate(node->wcache->fd, offset);
-        if(ret) {
-            node->unlockmeta();
-            return ret;
-        }
-        node->st.st_size = offset;
+int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
+    inode_t* node = (inode_t *) fi->fh;
+    node->lockmeta();
+    node->flag &= ~SYNCED;
+    int ret = ftruncate(node->wcache->fd, offset);
+    if(ret) {
         node->unlockmeta();
-        int oc = GetWriteBlkNo(node->st.st_size); //原来的块数
-        int nc = GetWriteBlkNo(offset);   //扩展后的块数
-        if (offset > node->st.st_size) {      //文件长度被扩展
-            for(int i=oc; i<=nc; ++i){
-                if (oc && (node->wcache->flags[oc] & WF_DIRTY) == 0) {
-                    sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
-                }
-                node->lockdate();
-                node->wcache->flags[i] |= WF_DIRTY;
-                if (node->wcache->flags[i] & WF_TRANS) {
-                    node->wcache->flags[i] |= WF_REOPEN;
-                }
-                node->unlockdate();
-            }
-        }else{
-            if (nc && (node->wcache->flags[nc] & WF_DIRTY) == 0) {
+        return ret;
+    }
+    node->st.st_size = offset;
+    node->unlockmeta();
+    int oc = GetWriteBlkNo(node->st.st_size); //原来的块数
+    int nc = GetWriteBlkNo(offset);   //扩展后的块数
+    if (offset > node->st.st_size) {      //文件长度被扩展
+        for(int i=oc; i<=nc; ++i){
+            if (oc && (node->wcache->flags[oc] & WF_DIRTY) == 0) {
                 sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
             }
             node->lockdate();
-            node->wcache->flags[nc] |= WF_DIRTY;
-            if (node->wcache->flags[nc] & WF_TRANS) {
-                node->wcache->flags[nc] |= WF_REOPEN;
-            }
-            for(int i=nc+1; i<=oc; ++i){
-                node->wcache->flags[i] = 0;
+            node->wcache->flags[i] |= WF_DIRTY;
+            if (node->wcache->flags[i] & WF_TRANS) {
+                node->wcache->flags[i] |= WF_REOPEN;
             }
             node->unlockdate();
         }
-        return 0;
+    }else{
+        if (nc && (node->wcache->flags[nc] & WF_DIRTY) == 0) {
+            sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
+        }
+        node->lockdate();
+        node->wcache->flags[nc] |= WF_DIRTY;
+        if (node->wcache->flags[nc] & WF_TRANS) {
+            node->wcache->flags[nc] |= WF_REOPEN;
+        }
+        for(int i=nc+1; i<=oc; ++i){
+            node->wcache->flags[i] = 0;
+        }
+        node->unlockdate();
+    }
+    return 0;
+}
+
+int baidu_truncate(const char* path, off_t offset) {
+    inode_t *node = getnode(path, false);
+    if (node) {
+        node->unlockmeta();
+        struct fuse_file_info fi;
+        fi.fh = (uint64_t)node;
+        return baidu_ftruncate(path, offset, &fi);
     }
     return -EACCES;
 }
 
 
-int baiduapi_stub(const char *path)
+int baidu_stub(const char *path)
 {
     return 0;
 }

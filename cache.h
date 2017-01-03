@@ -6,11 +6,6 @@
 #include <map>
 #include <string>
 
-#ifdef  __cplusplus
-extern "C" {
-#endif
-
-    
 #define RBS            (uint64_t)0x100000         //1M,读缓存分块大小
 #define LWBS           (uint64_t)0x800000         //8M,前一半分块大小
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
@@ -63,10 +58,10 @@ public:
     inode_t(inode_t *parent);
     ~inode_t();
     bool empty();
-    void add_cache(const std::string& path, struct stat st);
+    const char* add_cache(std::string path, struct stat st);
     void clear_cache();
     inode_t* getnode(const std::string& path, bool create);
-    struct stat getstat(const std::string& path);
+    const struct stat* getstat(const std::string& path);
     void move(const std::string& path);
     std::string getcwd();
     std::string getname();
@@ -89,17 +84,12 @@ size_t GetWriteBlkEndPointFromP(size_t p);
 #define GetWriteBlkSize(b)  ((b)<WBC/2?LWBS:HWBS)
 
 std::string dirname(const std::string& path);
-std::string baseame(const std::string& path);
+std::string basename(const std::string& path);
+std::string encodepath(const std::string& path);
+bool endwith(const std::string& s1, const std::string& s2);
 
 inode_t* getnode(const char *path, bool create);
-struct stat getstat(const char *path);
-inode_t* rmcache(const char *path);
-void renamecache(const char *oldname,const char *newname);
 void cache_close(inode_t* node);
 
-
-#ifdef  __cplusplus
-}
-#endif
 
 #endif
