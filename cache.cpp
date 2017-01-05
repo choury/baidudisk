@@ -138,7 +138,6 @@ string encodepath(const string& path){
 
 rfcache::rfcache(){
     fd = tempfile();
-    memset(taskid, 0, sizeof(taskid));
     memset(mask, 0, sizeof(mask));
 }
 
@@ -148,7 +147,6 @@ rfcache::~rfcache(){
 
 wfcache::wfcache(){
     fd = tempfile();
-    memset(taskid, 0, sizeof(taskid));
     memset(md5, 0, sizeof(md5));
     memset(flags, 0, sizeof(flags));
 }

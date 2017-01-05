@@ -6,12 +6,12 @@
 #include <map>
 #include <string>
 
-#define RBS            (uint64_t)0x100000         //1M,读缓存分块大小
+#define RBS            (uint64_t)0x40000          //256K,读缓存分块大小
 #define LWBS           (uint64_t)0x800000         //8M,前一半分块大小
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
-#define RBC            (uint64_t)20480            //读缓存个数, 最多20G
+#define RBC            (uint64_t)81920            //读缓存个数, 最多20G
 #define WBC            (uint64_t)1024             //写缓存分块个数，百度定的，最大1024
-#define MAXCACHE       20
+#define MAXCACHE       30
     
 #define PATHLEN        1024
 
@@ -19,8 +19,8 @@
 
 struct rfcache{
     int fd;
-    task_t taskid[RBC];
     unsigned int mask[RBC/32+1];                //为1代表已经从服务器成功读取
+    std::map<uint32_t, task_t> taskid;
     rfcache();
     ~rfcache();
 };
@@ -28,7 +28,7 @@ struct rfcache{
 struct wfcache{
     int fd;
     char md5[WBC][35];
-    task_t taskid[WBC];
+    std::map<uint32_t, task_t> taskid;
 //每一个block有3位标志位：是否为脏块, 是否在同步,同步时是否被写
 #define WF_DIRTY   1
 #define WF_TRANS   2

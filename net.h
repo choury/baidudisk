@@ -1,4 +1,5 @@
 #include <curl/curl.h>
+#include <stdint.h>
 #ifndef __NET_H__
 #define __NET_H__
 
@@ -16,6 +17,7 @@ typedef struct Httprequest {
     char *range;
     char *cookies;
     char *useragent;
+    uint32_t timeout;
     CBfunc readfunc;                //传送给服务器的数据
     void *readprame;
     CBfunc writefunc;               //读取服务器返回的数据

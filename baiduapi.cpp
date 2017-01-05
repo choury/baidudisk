@@ -8,6 +8,8 @@
 #include <assert.h>
 #include <fuse.h>
 
+#include <set>
+
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -196,6 +198,7 @@ void readblock(block *tb) {
     r->writefunc = savetobuff;
     r->writeprame = &bs;
     r->range = range;
+    r->timeout = RBS/(10*1024);
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
@@ -210,12 +213,12 @@ void readblock(block *tb) {
     b.node->lockdate();
     pwrite(b.node->rcache->fd, bs.buf, bs.offset, startp);
     b.node->rcache->mask[b.bno / 32] |= 1 << (b.bno % 32);
-    b.node->rcache->taskid[b.bno] = 0;
+    b.node->rcache->taskid.erase(b.bno);
     b.node->unlockdate();
     return;
 error:
     b.node->lockdate();
-    b.node->rcache->taskid[b.bno] = 0;
+    b.node->rcache->taskid.erase(b.bno);
     b.node->unlockdate();
 }
 
@@ -260,6 +263,7 @@ void uploadblock(block *tb) {
         r->length = bs.len;
         r->writefunc = savetofile;
         r->writeprame = tpfile;
+        r->timeout = GetWriteBlkSize(b.bno)/(10*1024);
 
         if ((errno = request(r)) != CURLE_OK) {
             errorlog("network error:%d\n", errno);
@@ -300,7 +304,7 @@ void uploadblock(block *tb) {
                 if (b.bno)
                     sem_post(&wcache_sem);
             }
-            b.node->wcache->taskid[b.bno] = 0;
+            b.node->wcache->taskid.erase(b.bno);
             b.node->unlockdate();
             json_object_put(json_get);
             return;
@@ -309,7 +313,7 @@ void uploadblock(block *tb) {
         }
     }while(0);
     b.node->lockdate();
-    b.node->wcache->taskid[b.bno] = 0;
+    b.node->wcache->taskid.erase(b.bno);
     b.node->unlockdate();
 }
 
@@ -499,6 +503,8 @@ void *baidu_init(struct fuse_conn_info *conn) {
     sprintf(basedir,"%s/.baidudisk",getenv("HOME"));
     mkdir(basedir,S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
     addtask((taskfunc)job_handle, nullptr, 0);
+    conn->want = conn->capable & FUSE_CAP_BIG_WRITES;
+    conn->max_readahead = RBS*MAXCACHE;
     return NULL;
 }
 
@@ -1221,10 +1227,12 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
     if(node->type ==  cache_type::read){
         node->lockdate();
         int c = offset / RBS;  //计算一下在哪个块
-        for (int i = 0; i < MAXCACHE; ++i) {             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
-            size_t p = i + c;
-            if (p <= node->st.st_size / RBS &&
-                node->rcache->taskid[p] == 0 &&
+        size_t p = c;
+        do{             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
+            if( p > node->st.st_size / RBS){
+                break;
+            }
+            if (node->rcache->taskid.count(p) == 0 &&
                 !(node->rcache->mask[p / 32] & (1 << (p % 32))))
             {
                 block *b = (block *) malloc(sizeof(block));
@@ -1233,14 +1241,18 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
                 node->rcache->taskid[p] = addtask((taskfunc) readblock, b, 0);
                 node->flag &= ~SYNCED;
             }
-        }
-        node->unlockdate();
+            p++;
+        }while (node->rcache->taskid.size() < MAXCACHE);
         node->unlockmeta();
-        waittask(node->rcache->taskid[c]);
-        node->lockdate();
+        if(node->rcache->taskid.count(c)){
+            task_t taskid = node->rcache->taskid[c];
+            node->unlockdate();
+            waittask(taskid);
+            node->lockdate();
+        }
         if (!(node->rcache->mask[c / 32] & (1 << (c % 32)))) {
             node->unlockdate();
-            return -EIO;                                    //如果在这里返回那么读取出错
+            return baidu_read(path, buf, size, offset, fi);  //如果在这里返回那么读取出错,重试
         }
         size_t len = Min(size, (c + 1) * RBS - offset);      //计算最长能读取的字节
         ssize_t ret = pread(node->rcache->fd, buf, len, offset);
@@ -1305,6 +1317,7 @@ int baidu_uploadfile(const char *path, inode_t* node) {
     lseek(file, 0, SEEK_SET);
     r->writefunc = savetofile;
     r->writeprame = tpfile;
+    r->timeout = r->length/(10*1024) + 10;
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
         Httpdestroy(r);
@@ -1454,12 +1467,13 @@ int filesync(inode_t *node){
     node->lockdate();
     switch (node->type) {
     case cache_type::read:
-        for (size_t i = 0; i <= GetWriteBlkNo(node->st.st_size); ++i) {
-            if (node->rcache->taskid[i]) {
-                node->unlockdate();
-                waittask(node->rcache->taskid[i]);
-                node->lockdate();
-            }
+        while(node->rcache->taskid.size()){
+            task_t taskid = node->rcache->taskid.begin()->second;
+            node->unlockmeta();
+            node->unlockdate();
+            waittask(taskid);
+            node->lockmeta();
+            node->lockdate();
         }
         break;
     case cache_type::write:
@@ -1468,24 +1482,30 @@ int filesync(inode_t *node){
             node->wcache->flags[0] = 0;
             time(&node->st.st_mtime);
         } else {
-            int done = 0;
-            while (!done) {
-                done = 1;
+            int dirty;
+            do {
+                dirty = 0;
+                std::set<task_t> waitset;
                 for (size_t i = 0; i <= GetWriteBlkNo(node->st.st_size); ++i) {
-                    if (node->wcache->taskid[i]) {
-                        node->unlockdate();
-                        waittask(node->wcache->taskid[i]);
-                        node->lockdate();
-                    }
-                    if (node->st.st_nlink && (node->wcache->flags[i] & WF_DIRTY)) {
+                    if (node->wcache->taskid.count(i)) {
+                        waitset.insert(node->wcache->taskid[i]);
+                    }else if (node->st.st_nlink && (node->wcache->flags[i] & WF_DIRTY)) {
                         block *b = (block *)malloc(sizeof(block));
                         b->bno = i;
                         b->node =  node;
                         node->wcache->taskid[i] = addtask((taskfunc) uploadblock, b, 0);
-                        done = 0;
+                        waitset.insert(node->wcache->taskid[i]);
+                        dirty = 1;
                     }
                 }
-            }
+                node->unlockmeta();
+                node->unlockdate();
+                for(auto i:waitset){
+                    waittask(i);
+                }
+                node->lockmeta();
+                node->lockdate();
+            }while(dirty);
             while (baidu_mergertmpfile(node->getcwd().c_str(), node));
             time(&node->st.st_mtime);
         }
@@ -1541,7 +1561,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
         }
 
         for (size_t i = 0; i < GetWriteBlkNo(node->st.st_size); ++i) {
-            if (node->wcache->taskid[i] == 0 &&
+            if (node->wcache->taskid.count(i) == 0 &&
                 (node->wcache->flags[i] & WF_DIRTY))              //如果这个block是脏的那么加个上传任务
             {
                 block *b = (block *)malloc(sizeof(block));
