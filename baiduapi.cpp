@@ -497,14 +497,13 @@ int refreshtoken() {
 
 //初始化，没什么好说的……
 void *baidu_init(struct fuse_conn_info *conn) {
-    sem_init(&wcache_sem, 0, MAXCACHE);
+    sem_init(&wcache_sem, 0, WCACHEC);
     creatpool(THREADS);
     char basedir[PATHLEN];
     sprintf(basedir,"%s/.baidudisk",getenv("HOME"));
     mkdir(basedir,S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
     addtask((taskfunc)job_handle, nullptr, 0);
     conn->want = conn->capable & FUSE_CAP_BIG_WRITES;
-    conn->max_readahead = RBS*MAXCACHE;
     return NULL;
 }
 
@@ -1242,7 +1241,7 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
                 node->flag &= ~SYNCED;
             }
             p++;
-        }while (node->rcache->taskid.size() < MAXCACHE);
+        }while (node->rcache->taskid.size() < RCACHEC);
         node->unlockmeta();
         if(node->rcache->taskid.count(c)){
             task_t taskid = node->rcache->taskid[c];

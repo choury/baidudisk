@@ -3,6 +3,8 @@
 #include <fuse.h>
 
 
+#define THREADS 50
+
 /*
  * 各api定义参阅http://developer.baidu.com/wiki/index.php?title=docs/pcs/rest/file_data_apis_list
  * 

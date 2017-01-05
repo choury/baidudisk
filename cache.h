@@ -11,7 +11,8 @@
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
 #define RBC            (uint64_t)81920            //读缓存个数, 最多20G
 #define WBC            (uint64_t)1024             //写缓存分块个数，百度定的，最大1024
-#define MAXCACHE       30
+#define RCACHEC        30
+#define WCACHEC        10
     
 #define PATHLEN        1024
 
