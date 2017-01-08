@@ -297,6 +297,9 @@ Http *Httpinit(const char *url){
 
 void Httpdestroy(Http *hh){
     releasecurl(hh->curl_handle);
+    if(hh->closefunc){
+        hh->closefunc(hh->closeprame);
+    }
     free(hh);
 }
 

@@ -21,7 +21,7 @@ extern char confpath[];
 typedef struct {
     size_t offset;
     size_t len;
-    unsigned char *buf;
+    char *buf;
 } buffstruct;
 
 

@@ -1,6 +1,6 @@
 project(baidudisk)
 
-add_executable(baidudisk cache.cpp net.c utils.cpp json_object_from_file.c baiduapi.cpp threadpool.cpp job.cpp main.c)
+add_executable(baidudisk cache.cpp net.c utils.cpp baiduapi.cpp threadpool.cpp job.cpp main.c)
 
 install(TARGETS baidudisk RUNTIME DESTINATION bin)
 

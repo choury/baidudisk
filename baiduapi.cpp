@@ -20,7 +20,6 @@
 #include <json-c/json.h>
 
 
-#include "json_object_from_file.h"
 #include "utils.h"
 #include "baiduapi.h"
 #include "threadpool.h"
@@ -108,24 +107,38 @@ static int handleerror(const int error)
 
 
 //顾名思义，将服务器传回的数据写到buff中
-
 static size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
 {
     buffstruct *bs = (buffstruct *) user_p;
+    if(bs->buf == nullptr){
+        assert(bs->offset == 0);
+        assert(bs->len == 0);
+        bs->buf = (char*)malloc(1024);
+        bs->len = 1024;
+    }
     size_t len = size * nmemb;
+    if(bs->offset + len > bs->len){
+        bs->len = (bs->offset + len + 1023)/1024*1024;
+        bs->buf = (char*)realloc(bs->buf, bs->len);
+    }
     memcpy(bs->buf + bs->offset, buffer, len);
     bs->offset += len;
     return len;
 }
 
-//写到文件中
-static size_t savetofile(void *buffer, size_t size, size_t nmemb, void *user_p)
-{
-    FILE *fp = (FILE *) user_p;
-    size_t return_size = fwrite(buffer, size, nmemb, fp);
-    return return_size;
+void freebuff(void *user_p){
+    buffstruct *bs = (buffstruct *) user_p;
+    free(bs->buf);
+    bs->len = 0;
+    bs->offset = 0;
+    bs->buf = nullptr;
 }
 
+static size_t readfromfd(void *buffer, size_t size, size_t nmemb, void *user_p)
+{
+    int fd = (int) (long)user_p;
+    return read(fd,buffer, size*nmemb)/size;
+}
 
 static size_t readfromfdxor(void *buffer, size_t size, size_t nmemb, void *user_p)
 {
@@ -177,40 +190,43 @@ void readblock(block *tb) {
              "access_token=%s&"
              "path=%s"
              , Access_Token, URLEncode(fullpath).c_str());
-    char range[100] = {0};
-    snprintf(range, sizeof(range) - 1, "%lu-%lu", startp, startp + RBS - 1);
-    unsigned char buf[RBS];
-    buffstruct bs = {0, RBS, buf};
-    Http *r = Httpinit(buff);
-
-    if (r == NULL) {
-        errorlog("can't resolve domain:%s\n", strerror(errno));
-        goto error;
-    }
-
-    r->method = Httprequest::get;
-    r->writefunc = savetobuff;
-    r->writeprame = &bs;
-    r->range = range;
-    r->timeout = RBS/(10*1024);
-
-    if ((errno = request(r)) != CURLE_OK) {
-        errorlog("network error:%d\n", errno);
+    do{
+        
+        Http *r = Httpinit(buff);
+        if (r == NULL) {
+            errorlog("can't resolve domain:%s\n", strerror(errno));
+            break;
+        }
+        
+        r->method = Httprequest::get;
+        
+        char *buf = (char *)malloc(RBS);
+        buffstruct bs = {0, RBS, buf};
+        r->writefunc = savetobuff;
+        r->writeprame = &bs;
+        r->closefunc = freebuff;
+        r->closeprame = &bs;
+        r->timeout = RBS/(10*1024);
+        
+        char range[100] = {0};
+        snprintf(range, sizeof(range) - 1, "%lu-%lu", startp, startp + RBS - 1);
+        r->range = range;
+        
+        if ((errno = request(r)) != CURLE_OK) {
+            errorlog("network error:%d\n", errno);
+            Httpdestroy(r);
+            break;
+        }
+        
+        if(b.node->flag & ENCRYPT)
+            xorcode(bs.buf, startp, bs.offset, ak);
+        
+        b.node->rcache->lock();
+        pwrite(b.node->rcache->fd, bs.buf, bs.offset, startp);
+        b.node->rcache->mask[b.bno / 32] |= 1 << (b.bno % 32);
+        b.node->rcache->unlock();
         Httpdestroy(r);
-        goto error;
-    }
-
-    Httpdestroy(r);
-    if(b.node->flag & ENCRYPT)
-        xorcode(bs.buf, startp, bs.offset, ak);
-    
-    b.node->rcache->lock();
-    pwrite(b.node->rcache->fd, bs.buf, bs.offset, startp);
-    b.node->rcache->mask[b.bno / 32] |= 1 << (b.bno % 32);
-    b.node->rcache->taskid.erase(b.bno);
-    b.node->rcache->unlock();
-    return;
-error:
+    }while(0);
     b.node->rcache->lock();
     b.node->rcache->taskid.erase(b.bno);
     b.node->rcache->unlock();
@@ -228,7 +244,7 @@ void uploadblock(block *tb) {
              "type=tmpfile"
              , Access_Token);
 
-
+    char *buf = nullptr;
     do{
         Http *r = Httpinit(buff);
 
@@ -237,43 +253,38 @@ void uploadblock(block *tb) {
             break;
         }
 
-        FILE *tpfile = tmpfile();
-        if (!tpfile) {
-            errorlog("create temp file error:%s\n", strerror(errno));
-            break;
-        }
-
-        unsigned char *buf = (unsigned char *)malloc(GetWriteBlkSize(b.bno));
-        buffstruct bs = {0, GetWriteBlkSize(b.bno), buf};
+        buf = (char *)malloc(GetWriteBlkSize(b.bno));
+        buffstruct read_bs = {0, GetWriteBlkSize(b.bno), buf};
         b.node->wcache->lock();
         b.node->wcache->flags[b.bno] |= WF_TRANS;
-        bs.len = pread(b.node->wcache->fd, bs.buf, bs.len, GetWriteBlkStartPoint(b.bno));
+        read_bs.len = pread(b.node->wcache->fd, read_bs.buf, read_bs.len, GetWriteBlkStartPoint(b.bno));
         b.node->wcache->unlock();
 
-        xorcode(bs.buf, GetWriteBlkStartPoint(b.bno), bs.len, ak);
+        if(b.node->flag & ENCRYPT)
+            xorcode(read_bs.buf, GetWriteBlkStartPoint(b.bno), read_bs.len, ak);
+        
         r->method = Httprequest::post_formdata;
         r->readfunc = readfrombuff;
-        r->readprame = &bs;
-        r->length = bs.len;
-        r->writefunc = savetofile;
-        r->writeprame = tpfile;
+        r->readprame = &read_bs;
+        r->length = read_bs.len;
+        
+        buffstruct write_bs ={0, 0, 0};
+        r->writefunc = savetobuff;
+        r->writeprame = &write_bs;
+        r->closefunc = freebuff;
+        r->closeprame = &write_bs;
         r->timeout = GetWriteBlkSize(b.bno)/(10*1024);
 
         if ((errno = request(r)) != CURLE_OK) {
             errorlog("network error:%d\n", errno);
-            free(buf);
             Httpdestroy(r);
-            fclose(tpfile);
             break;
         }
-        free(buf);
+        
+        json_object * json_get = json_tokener_parse(write_bs.buf);
         Httpdestroy(r);
-
-        json_object * json_get = json_object_from_FILE(tpfile);
-        fclose(tpfile);
-
         if (json_get == NULL) {
-            errorlog("json_object_from_FILE filed!\n");
+            errorlog("json_tokener_parse filed!\n");
             break;
         }
 
@@ -298,14 +309,13 @@ void uploadblock(block *tb) {
                 if (b.bno)
                     sem_post(&wcache_sem);
             }
-            b.node->wcache->taskid.erase(b.bno);
             b.node->wcache->unlock();
             json_object_put(json_get);
-            return;
         } else {
             errorlog("Did not get MD5:%s\n", json_object_to_json_string(json_get));
         }
     }while(0);
+    free(buf);
     b.node->wcache->lock();
     b.node->wcache->taskid.erase(b.bno);
     b.node->wcache->unlock();
@@ -341,40 +351,33 @@ int gettoken() {
                 "client_secret=%s&"
                 "redirect_uri=oob"
                 , code, ak, sk);
-        FILE *tpfile = tmpfile();
-
-        if (!tpfile) {
-            int lasterrno = errno;
-            errorlog("create temp file error:%s\n", strerror(errno));
-            return -lasterrno;
-        }
 
         Http *r = Httpinit(buff);
 
         if (r == NULL) {
             int lasterrno = errno;
             errorlog("can't resolve domain:%s\n", strerror(errno));
-            fclose(tpfile);
             return -lasterrno;
         }
 
         r->method = Httprequest::get;
-        r->writefunc = savetofile;
-        r->writeprame = tpfile;
+        buffstruct bs = {0, 0, 0};
+        r->writefunc = savetobuff;
+        r->writeprame = &bs;
+        r->closefunc = freebuff;
+        r->closeprame = &bs;
 
         if ((errno = request(r)) != CURLE_OK) {
             errorlog("network error:%d\n", errno);
-            fclose(tpfile);
             Httpdestroy(r);
             return -EPROTO;
         }
 
+        json_get = json_tokener_parse(bs.buf);
         Httpdestroy(r);
-        json_get = json_object_from_FILE(tpfile);
-        fclose(tpfile);
 
         if (json_get == NULL) {
-            errorlog("json_object_from_FILE filed!\n");
+            errorlog("json_tokener_parse filed!\n");
             return -EPROTO;
         }
 
@@ -438,31 +441,24 @@ int refreshtoken() {
         }
 
         Http *r = Httpinit(buff);
-
-        if (r == NULL) {
-            int lasterrno = errno;
-            errorlog("can't resolve domain:%s\n", strerror(errno));
-            fclose(tpfile);
-            return -lasterrno;
-        }
-
         r->method = Httprequest::get;
-        r->writefunc = savetofile;
-        r->writeprame = tpfile;
+        buffstruct bs = {0, 0, 0};
+        r->writefunc = savetobuff;
+        r->writeprame = &bs;
+        r->closefunc = freebuff;
+        r->closeprame = &bs;
 
         if ((errno = request(r)) != CURLE_OK) {
             errorlog("network error:%d\n", errno);
-            fclose(tpfile);
             Httpdestroy(r);
             return -EPROTO;
         }
 
+        json_get = json_tokener_parse(bs.buf);
         Httpdestroy(r);
-        json_get = json_object_from_FILE(tpfile);
-        fclose(tpfile);
 
         if (json_get == NULL) {
-            errorlog("json_object_from_FILE filed!\n");
+            errorlog("json_tokener_parse filed!\n");
             return -EPROTO;
         }
         
@@ -533,40 +529,30 @@ int baidu_getattr(const char *path, struct stat *st) {
              "access_token=%s&"
              "path=%s",
              Access_Token, URLEncode(fullpath).c_str());
-    FILE *tpfile = tmpfile();
-
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
-
     Http *r = Httpinit(buff);
-
     if (r == NULL) {
         int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        fclose(tpfile);
         return -lasterrno;
     }
-
     r->method = Httprequest::get;
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+    r->closefunc = freebuff;
+    r->closeprame = &bs;
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
-        fclose(tpfile);
         Httpdestroy(r);
         return -EPROTO;
     }
 
+    json_get = json_tokener_parse(bs.buf);
     Httpdestroy(r);
-    json_get = json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
@@ -652,40 +638,32 @@ int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t off
              "path=%s"
              , Access_Token, URLEncode(fullpath).c_str());
 
-    FILE *tpfile = tmpfile();
-
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
-
     Http *r = Httpinit(buff);
 
     if (r == NULL) {
         int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        fclose(tpfile);
         return -lasterrno;
     }
 
     r->method = Httprequest::get;
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+    r->closefunc = freebuff;
+    r->closeprame = &bs;
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
-        fclose(tpfile);
         Httpdestroy(r);
         return -EPROTO;
     }
 
+    json_object *json_get = json_tokener_parse(bs.buf);
     Httpdestroy(r);
-    json_object *json_get = json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
@@ -748,40 +726,32 @@ int baidu_statfs(const char *path, struct statvfs *sf)
             "https://pcs.baidu.com/rest/2.0/pcs/quota?"
             "method=info&"
             "access_token=%s", Access_Token);
-    FILE *tpfile = tmpfile();
-
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
 
     Http *r = Httpinit(buff);
-
     if (r == NULL) {
         int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        fclose(tpfile);
         return -lasterrno;
     }
 
     r->method = Httprequest::get;
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+    r->closefunc = freebuff;
+    r->closeprame = &bs;
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n",  errno);
-        fclose(tpfile);
         Httpdestroy(r);
         return -EPROTO;
     }
 
+    json_object *json_get = json_tokener_parse(bs.buf);
     Httpdestroy(r);
-    json_object *json_get = json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
@@ -821,40 +791,33 @@ int baidu_mkdir(const char *path, mode_t mode) {
              "access_token=%s&"
              "path=%s"
              , Access_Token, URLEncode(fullpath).c_str());
-    FILE *tpfile = tmpfile();
 
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
 
     Http *r = Httpinit(buff);
-
     if (r == NULL) {
         int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        fclose(tpfile);
         return -lasterrno;
     }
 
     r->method = Httprequest::get;
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+    r->closefunc = freebuff;
+    r->closeprame = &bs;
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
-        fclose(tpfile);
         Httpdestroy(r);
         return -EPROTO;
     }
 
+    json_object *json_get = json_tokener_parse(bs.buf);
     Httpdestroy(r);
-    json_object *json_get = json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
@@ -905,40 +868,32 @@ int baidu_unlink(const char *path) {
              "access_token=%s&"
              "path=%s"
              , Access_Token, URLEncode(fullpath).c_str());
-    FILE *tpfile = tmpfile();
-
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
 
     Http *r = Httpinit(buff);
-
     if (r == NULL) {
         int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        fclose(tpfile);
         return -lasterrno;
     }
 
     r->method = Httprequest::get;
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+    r->closefunc = freebuff;
+    r->closeprame = &bs;
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
-        fclose(tpfile);
         Httpdestroy(r);
         return -EPROTO;
     }
 
+    json_object *json_get = json_tokener_parse(bs.buf);
     Httpdestroy(r);
-    json_object *json_get = json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
@@ -981,40 +936,31 @@ int baidu_rmdir(const char *path) {
                  "path=%s&limit=0-1"
                  , Access_Token, URLEncode(fullpath).c_str());
 
-        FILE *tpfile = tmpfile();
-
-        if (!tpfile) {
-            int lasterrno = errno;
-            errorlog("create temp file error:%s\n", strerror(errno));
-            return -lasterrno;
-        }
-
         Http *r = Httpinit(buff);
-
         if (r == NULL) {
             int lasterrno = errno;
             errorlog("can't resolve domain:%s\n", strerror(errno));
-            fclose(tpfile);
             return -lasterrno;
         }
 
         r->method = Httprequest::get;
-        r->writefunc = savetofile;
-        r->writeprame = tpfile;
+        buffstruct bs = {0, 0, 0};
+        r->writefunc = savetobuff;
+        r->writeprame = &bs;
+        r->closefunc = freebuff;
+        r->closeprame = &bs;
 
         if ((errno = request(r)) != CURLE_OK) {
             errorlog("network error:%d\n", errno);
-            fclose(tpfile);
             Httpdestroy(r);
             return -EPROTO;
         }
 
+        json_object *json_get = json_tokener_parse(bs.buf);
         Httpdestroy(r);
-        json_object *json_get = json_object_from_FILE(tpfile);
-        fclose(tpfile);
 
         if (json_get == NULL) {
-            errorlog("json_object_from_FILE filed!\n");
+            errorlog("json_tokener_parse filed!\n");
             return -EPROTO;
         }
 
@@ -1063,40 +1009,32 @@ int baidu_rename(const char *oldname, const char *newname) {
              "from=%s&"
              "to=%s"
              , Access_Token, URLEncode(oldfullpath).c_str(), URLEncode(newfullpath).c_str());
-    FILE *tpfile = tmpfile();
-
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
-
+    
     Http *r = Httpinit(buff);
-
     if (r == NULL) {
         int lasterrno = errno;
         errorlog("can't resolve domain:%s\n", strerror(errno));
-        fclose(tpfile);
         return -lasterrno;
     }
 
     r->method = Httprequest::get;
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+    r->closefunc = freebuff;
+    r->closeprame = &bs;
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
-        fclose(tpfile);
         Httpdestroy(r);
         return -EPROTO;
     }
 
+    json_object *json_get = json_tokener_parse(bs.buf);
     Httpdestroy(r);
-    json_object *json_get = json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
@@ -1281,36 +1219,35 @@ int baidu_uploadfile(const char *path, inode_t* node) {
         return -lasterrno;
     }
 
-    FILE *tpfile = tmpfile();
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
-
     assert(node->type == cache_type::write);
     int file = node->wcache->fd;
     r->method = Httprequest::post_formdata;
-    r->readfunc = readfromfdxor;
+    if(node->flag & ENCRYPT){
+        r->readfunc = readfromfdxor;
+    }else{
+        r->readfunc = readfromfd;
+    }
     r->readprame = (void *)(long)file;
     r->length = lseek(file, 0, SEEK_END);
     lseek(file, 0, SEEK_SET);
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
+    
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+    r->closefunc = freebuff;
+    r->closeprame = &bs;
     r->timeout = r->length/(10*1024) + 10;
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
         Httpdestroy(r);
-        fclose(tpfile);
         return -EPROTO;
     }
 
+    json_object *json_get= json_tokener_parse(bs.buf);
     Httpdestroy(r);
-    json_object *json_get= json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
@@ -1366,7 +1303,7 @@ int baidu_mergertmpfile(const char *path, inode_t *node) {
     char param[36000];
     int len = snprintf(param, sizeof(param) - 1, "param=%s", json_object_to_json_string(jobj));
     json_object_put(jobj);
-    buffstruct bs = {0, (size_t)len, (unsigned char*)param};
+    buffstruct read_bs = {0, (size_t)len, param};
     Http *r = Httpinit(buff);
 
     if (r == NULL) {
@@ -1375,32 +1312,28 @@ int baidu_mergertmpfile(const char *path, inode_t *node) {
         return -lasterrno;
     }
 
-    FILE *tpfile = tmpfile();
-    if (!tpfile) {
-        int lasterrno = errno;
-        errorlog("create temp file error:%s\n", strerror(errno));
-        return -lasterrno;
-    }
     r->method = Httprequest::post_x_www_form_urlencoded;
     r->readfunc = readfrombuff;
-    r->readprame = &bs;
-    r->writefunc = savetofile;
-    r->writeprame = tpfile;
-    r->length = bs.len;
+    r->readprame = &read_bs;
+    r->length = read_bs.len;
+    
+    buffstruct write_bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &write_bs;
+    r->closefunc = freebuff;
+    r->closeprame = &write_bs;
 
     if ((errno = request(r)) != CURLE_OK) {
         errorlog("network error:%d\n", errno);
         Httpdestroy(r);
-        fclose(tpfile);
         return -EPROTO;
     }
 
+    json_object *json_get = json_tokener_parse(write_bs.buf);
     Httpdestroy(r);
-    json_object *json_get = json_object_from_FILE(tpfile);
-    fclose(tpfile);
 
     if (json_get == NULL) {
-        errorlog("json_object_from_FILE filed!\n");
+        errorlog("json_tokener_parse filed!\n");
         return -EPROTO;
     }
 
