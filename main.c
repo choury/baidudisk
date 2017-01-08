@@ -31,6 +31,7 @@ struct fuse_operations baidu_oper = {
     .truncate   = baidu_truncate,
     .fsync      = baidu_fsync,
     .flush      = baidu_flush,
+    .getxattr   = baidu_getxattr,
     .access     = baidu_stub,
     .utimens    = baidu_stub,
 };

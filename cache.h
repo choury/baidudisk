@@ -22,7 +22,10 @@ struct rfcache{
     int fd;
     unsigned int mask[RBC/32+1];                //为1代表已经从服务器成功读取
     std::map<uint32_t, task_t> taskid;
+    pthread_mutex_t Lock;
     rfcache();
+    void lock();
+    void unlock();
     ~rfcache();
 };
 
@@ -35,7 +38,10 @@ struct wfcache{
 #define WF_TRANS   2
 #define WF_REOPEN  4
     unsigned char flags[WBC];
+    pthread_mutex_t Lock;
     wfcache();
+    void lock();
+    void unlock();
     ~wfcache();
 };
 
@@ -44,8 +50,7 @@ enum class cache_type{status, read, write};
 
 struct inode_t {
 private:
-    pthread_mutex_t metalock;
-    pthread_mutex_t datelock;
+    pthread_mutex_t Lock;
     std::map<std::string, inode_t*> child;
 public:
     cache_type type = cache_type::status;
@@ -60,17 +65,15 @@ public:
     ~inode_t();
     bool empty();
     const char* add_cache(std::string path, struct stat st);
-    void clear_cache();
+    bool clear_cache();
     inode_t* getnode(const std::string& path, bool create);
     const struct stat* getstat(const std::string& path);
     void move(const std::string& path);
     std::string getcwd();
     std::string getname();
     int filldir(void *buff, fuse_fill_dir_t filler);
-    int lockmeta();
-    int unlockmeta();
-    int lockdate();
-    int unlockdate();
+    int lock();
+    int unlock();
     void remove();
     void release();
     friend void inode_release(inode_t* node);
@@ -91,6 +94,7 @@ bool endwith(const std::string& s1, const std::string& s2);
 
 inode_t* getnode(const char *path, bool create);
 void cache_close(inode_t* node);
+void cache_clear();
 
 
 #endif

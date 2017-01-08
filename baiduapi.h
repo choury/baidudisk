@@ -49,6 +49,7 @@ int baidu_fsync (const char *path, int flag, struct fuse_file_info *fi);
 int baidu_flush(const char * path, struct fuse_file_info *fi);
 int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi);
 int baidu_truncate(const char * path, off_t offset);
+int baidu_getxattr(const char *path, const char *name, char *value, size_t len);
 int baidu_stub(const char *path);
 
 #ifdef  __cplusplus

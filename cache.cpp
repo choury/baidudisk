@@ -139,20 +139,51 @@ string encodepath(const string& path){
 rfcache::rfcache(){
     fd = tempfile();
     memset(mask, 0, sizeof(mask));
+    pthread_mutexattr_t mutexattr;
+    pthread_mutexattr_init(&mutexattr);
+    pthread_mutexattr_settype(&mutexattr,        //让它可以递归加锁
+                              PTHREAD_MUTEX_RECURSIVE_NP);
+    pthread_mutex_init(&Lock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
+    pthread_mutexattr_destroy(&mutexattr);
+}
+
+void rfcache::lock(){
+    pthread_mutex_lock(&Lock);
+}
+
+void rfcache::unlock(){
+    pthread_mutex_unlock(&Lock);
 }
 
 rfcache::~rfcache(){
     close(fd);
+    pthread_mutex_destroy(&Lock);
 }
 
 wfcache::wfcache(){
     fd = tempfile();
     memset(md5, 0, sizeof(md5));
     memset(flags, 0, sizeof(flags));
+    
+    pthread_mutexattr_t mutexattr;
+    pthread_mutexattr_init(&mutexattr);
+    pthread_mutexattr_settype(&mutexattr,        //让它可以递归加锁
+                              PTHREAD_MUTEX_RECURSIVE_NP);
+    pthread_mutex_init(&Lock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
+    pthread_mutexattr_destroy(&mutexattr);
+}
+
+void wfcache::lock(){
+    pthread_mutex_lock(&Lock);
+}
+
+void wfcache::unlock(){
+    pthread_mutex_unlock(&Lock);
 }
 
 wfcache::~wfcache(){
     close(fd);
+    pthread_mutex_destroy(&Lock);
 }
 
 inode_t super_node(nullptr);
@@ -168,9 +199,7 @@ inode_t::inode_t(inode_t *parent) {
     pthread_mutexattr_init(&mutexattr);
     pthread_mutexattr_settype(&mutexattr,        //让它可以递归加锁
                               PTHREAD_MUTEX_RECURSIVE_NP);
-    pthread_mutex_init(&metalock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
-    pthread_mutex_init(&datelock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
-
+    pthread_mutex_init(&Lock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
     pthread_mutexattr_destroy(&mutexattr);
 }
 
@@ -179,8 +208,7 @@ inode_t::~inode_t(){
            (type == cache_type::read && rcache && wcache == nullptr) ||
            (type == cache_type::write && rcache == nullptr && wcache));
     assert(child.size() == 1);
-    pthread_mutex_destroy(&metalock);
-    pthread_mutex_destroy(&datelock);
+    pthread_mutex_destroy(&Lock);
     delete rcache;
     delete wcache;
     del_job((job_func)cache_close, this);
@@ -192,12 +220,12 @@ bool inode_t::empty(){
 }
 
 const char* inode_t::add_cache(string path, struct stat st) {
-    lockmeta();
+    lock();
     int encrypted = 0;
     assert(basename(path) == path);
     if(path == "." || path == "/"){
         this->st = st;
-        unlockmeta();
+        unlock();
         return path.c_str();
     }
     if(S_ISREG(st.st_mode) && endwith(path, ".enc")){
@@ -213,24 +241,28 @@ const char* inode_t::add_cache(string path, struct stat st) {
     if(child[path]->type != cache_type::write){
         child[path]->st = st;
     }
-    unlockmeta();
+    unlock();
     return path.c_str();
 }
 
-void inode_t::clear_cache(){
-    lockmeta();
+bool inode_t::clear_cache(){
+    lock();
     for(auto i = child.begin(); i!= child.end();){
         if(i->first == ".."){
             i++;
             continue;
         }
         if(i->second->type == cache_type::status){
-            i = child.erase(i);
+            if(i->second->clear_cache()){
+                i = child.erase(i);
+            }
         }else{
             i++;
         }
     }
-    unlockmeta();
+    flag &= ~SYNCED;
+    unlock();
+    return empty();;
 }
 
 inode_t* inode_t::getnode(const string& path, bool create) {
@@ -286,7 +318,7 @@ string inode_t::getname(){
 }
 
 string inode_t::getcwd(){
-    lockmeta();
+    lock();
     string path = getname();
     if(flag & ENCRYPT){
         assert(S_ISREG(st.st_mode));
@@ -296,7 +328,7 @@ string inode_t::getcwd(){
     while((p = p->child[".."])){
         path = p->getname() +"/"+ path;
     }
-    unlockmeta();
+    unlock();
     return path;
 }
 
@@ -325,7 +357,7 @@ int inode_t::filldir(void *buff, fuse_fill_dir_t filler){
 }
 
 void inode_t::remove(){
-    lockmeta();
+    lock();
     inode_t* p = child[".."];
     p->child.erase(getname());
     if(type == cache_type::status){
@@ -339,14 +371,14 @@ void inode_t::remove(){
         return;
     }else{
         st.st_nlink = 0;
-        unlockmeta();
+        unlock();
         return;
     }
 }
 
 
 void inode_t::release(){
-    lockmeta();
+    lock();
     assert(type != cache_type::status);
     filesync(this);
     opened--;
@@ -359,48 +391,39 @@ void inode_t::release(){
             add_job(job_func(cache_close), this, 300);
         }
     }
-    unlockmeta();
+    unlock();
 }
 
 void inode_t::move(const string& path){
     inode_t* p = super_node.getnode(dirname(path), true);
-    lockmeta();
+    lock();
     assert(child.count(".."));
     child[".."]->child.erase(getname());
     p->child[basename(path)] = this;
     child[".."] = p;
-    unlockmeta();
+    unlock();
 }
 
-int inode_t::lockmeta(){
-    return pthread_mutex_lock(&metalock);
+int inode_t::lock(){
+    return pthread_mutex_lock(&Lock);
 }
 
-int inode_t::unlockmeta(){
-    return pthread_mutex_unlock(&metalock);
-}
-
-int inode_t::lockdate(){
-    return pthread_mutex_lock(&datelock);
-}
-
-int inode_t::unlockdate(){
-    return pthread_mutex_unlock(&datelock);
+int inode_t::unlock(){
+    return pthread_mutex_unlock(&Lock);
 }
 
 inode_t* getnode(const char *path, bool create){
-    super_node.lockmeta();
+    super_node.lock();
     inode_t* node = super_node.getnode(path, create);
     if(node){
-        node->lockmeta();
+        node->lock();
     }
-    super_node.unlockmeta();
+    super_node.unlock();
     return node;
 }
 
 void cache_close(inode_t* node){
-    node->lockmeta();
-    node->lockdate();
+    node->lock();
     if(node->opened == 0){
         assert(node->flag & SYNCED );
         assert(node->type != cache_type::status);
@@ -416,7 +439,13 @@ void cache_close(inode_t* node){
         node->st.st_mode = S_IFREG | 0444;
     }
     del_job((job_func)cache_close, node);
-    node->unlockdate();
-    node->unlockmeta();
+    node->unlock();
     return;
 }
+
+void cache_clear() {
+    super_node.lock();
+    super_node.clear_cache();
+    super_node.unlock();
+}
+

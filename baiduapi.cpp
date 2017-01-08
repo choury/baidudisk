@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <fuse.h>
+#include <signal.h>
 
 #include <set>
 
@@ -126,13 +127,6 @@ static size_t savetofile(void *buffer, size_t size, size_t nmemb, void *user_p)
 }
 
 
-//从文件中读取给服务器发送的程序
-static size_t readfromfile(void *buffer, size_t size, size_t nmemb, void *user_p)
-{
-    FILE *file = (FILE *) user_p;
-    return fread(buffer, size, nmemb, file);
-}
-
 static size_t readfromfdxor(void *buffer, size_t size, size_t nmemb, void *user_p)
 {
     int fd = (int) (long)user_p;
@@ -210,16 +204,16 @@ void readblock(block *tb) {
     if(b.node->flag & ENCRYPT)
         xorcode(bs.buf, startp, bs.offset, ak);
     
-    b.node->lockdate();
+    b.node->rcache->lock();
     pwrite(b.node->rcache->fd, bs.buf, bs.offset, startp);
     b.node->rcache->mask[b.bno / 32] |= 1 << (b.bno % 32);
     b.node->rcache->taskid.erase(b.bno);
-    b.node->unlockdate();
+    b.node->rcache->unlock();
     return;
 error:
-    b.node->lockdate();
+    b.node->rcache->lock();
     b.node->rcache->taskid.erase(b.bno);
-    b.node->unlockdate();
+    b.node->rcache->unlock();
 }
 
 //上传一个block作为tmpfile
@@ -251,10 +245,10 @@ void uploadblock(block *tb) {
 
         unsigned char *buf = (unsigned char *)malloc(GetWriteBlkSize(b.bno));
         buffstruct bs = {0, GetWriteBlkSize(b.bno), buf};
-        b.node->lockdate();
+        b.node->wcache->lock();
         b.node->wcache->flags[b.bno] |= WF_TRANS;
         bs.len = pread(b.node->wcache->fd, bs.buf, bs.len, GetWriteBlkStartPoint(b.bno));
-        b.node->unlockdate();
+        b.node->wcache->unlock();
 
         xorcode(bs.buf, GetWriteBlkStartPoint(b.bno), bs.len, ak);
         r->method = Httprequest::post_formdata;
@@ -294,7 +288,7 @@ void uploadblock(block *tb) {
 
         json_object *jmd5;
         if (json_object_object_get_ex(json_get, "md5",&jmd5)) {
-            b.node->lockdate();
+            b.node->wcache->lock();
             b.node->wcache->flags[b.bno] &= ~WF_TRANS;
             if (b.node->wcache->flags[b.bno] & WF_REOPEN) {
                 b.node->wcache->flags[b.bno] &= ~WF_REOPEN;
@@ -305,16 +299,16 @@ void uploadblock(block *tb) {
                     sem_post(&wcache_sem);
             }
             b.node->wcache->taskid.erase(b.bno);
-            b.node->unlockdate();
+            b.node->wcache->unlock();
             json_object_put(json_get);
             return;
         } else {
             errorlog("Did not get MD5:%s\n", json_object_to_json_string(json_get));
         }
     }while(0);
-    b.node->lockdate();
+    b.node->wcache->lock();
     b.node->wcache->taskid.erase(b.bno);
-    b.node->unlockdate();
+    b.node->wcache->unlock();
 }
 
 /*获得Access_Token
@@ -504,6 +498,7 @@ void *baidu_init(struct fuse_conn_info *conn) {
     mkdir(basedir,S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
     addtask((taskfunc)job_handle, nullptr, 0);
     conn->want = conn->capable & FUSE_CAP_BIG_WRITES;
+    signal(SIGUSR1, (sighandler_t)cache_clear);
     return NULL;
 }
 
@@ -516,10 +511,10 @@ int baidu_getattr(const char *path, struct stat *st) {
     inode_t* node = getnode(dirname(path).c_str(), false);
     const struct stat *st_get = node->getstat(basename(std::string(path)));
     if(st_get == nullptr && (node->flag & SYNCED)){
-        node->unlockmeta();
+        node->unlock();
         return -ENOENT;
     }
-    node->unlockmeta();
+    node->unlock();
     if(st_get){
         memcpy(st, st_get, sizeof(struct stat));
         return 0;
@@ -620,9 +615,9 @@ int baidu_getattr(const char *path, struct stat *st) {
 
 int baidu_fgetattr(const char* path, struct stat* st, struct fuse_file_info* fi){
     inode_t *node = (inode_t*)fi->fh;
-    node->lockmeta();
+    node->lock();
     memcpy(st, &node->st, sizeof(struct stat));
-    node->unlockmeta();
+    node->unlock();
     return 0;
 }
 
@@ -633,10 +628,10 @@ int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t off
     inode_t* node = getnode(path, true);
     assert(node->type == cache_type::status);
     if(node->filldir(buf, filler)){
-        node->unlockmeta();
+        node->unlock();
         return 0;
     }
-    node->unlockmeta();
+    node->unlock();
 
     char buff[2048];
     char fullpath[PATHLEN];
@@ -704,8 +699,7 @@ int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t off
     json_object *jlist;
     json_object_object_get_ex(json_get, "list",&jlist);
     
-    node->lockmeta();
-    node->clear_cache();
+    node->lock();
     for (int i = 0; i < json_object_array_length(jlist); ++i) {
         json_object *filenode = json_object_array_get_idx(jlist, i);
         
@@ -739,7 +733,7 @@ int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t off
         filler(buf, node->add_cache(childname, st), &st, 0);
     }
     node->flag |= SYNCED;
-    node->unlockmeta();
+    node->unlock();
 
     json_object_put(json_get);
     return 0;
@@ -889,15 +883,13 @@ int baidu_mkdir(const char *path, mode_t mode) {
     st.st_mode = S_IFDIR | 0755;
     json_object_put(json_get);
     node->add_cache(basename(path), st);
-    node->unlockmeta();
+    node->unlock();
     return 0;
 }
 
 
 //删除文件（文件夹需使用rmdir）
 int baidu_unlink(const char *path) {
-    struct stat st;
-    baidu_getattr(path, &st);
     inode_t* node = getnode(path, false);
     if(node == nullptr){
         return -ENOENT;
@@ -905,7 +897,7 @@ int baidu_unlink(const char *path) {
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, node->getcwd().c_str());
-    node->unlockmeta();
+    node->unlock();
     
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -972,11 +964,11 @@ int baidu_rmdir(const char *path) {
         if(node->flag & SYNCED){
             assert(node->type == cache_type::status);
             if(!node->empty()){
-                node->unlockmeta();
+                node->unlock();
                 return -ENOTEMPTY;
             }
         }
-        node->unlockmeta();
+        node->unlock();
     }else{
         char buff[2048];
         char fullpath[PATHLEN];
@@ -1049,8 +1041,6 @@ int baidu_rmdir(const char *path) {
 /* 想猜你就继续猜吧
  */
 int baidu_rename(const char *oldname, const char *newname) {
-    struct stat st;
-    baidu_getattr(oldname, &st);
     inode_t *node = getnode(oldname, false);
     if(node == nullptr){
         return -ENOENT;
@@ -1064,7 +1054,7 @@ int baidu_rename(const char *oldname, const char *newname) {
     }else{
         snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s", basepath, newname);
     }
-    node->unlockmeta();
+    node->unlock();
 
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -1144,7 +1134,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     node->wcache->flags[0] = WF_DIRTY;
 
     fi->fh = (uint64_t) node;
-    node->unlockmeta();
+    node->unlock();
     return 0;
 }
 
@@ -1156,44 +1146,35 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
  * 否则，返回文件不存在
  */
 int baidu_open(const char *path, struct fuse_file_info *fi) {
-    struct stat st;
     inode_t* node = getnode(path, false);
-    if (node) {
-        switch(node->type){
-        case cache_type::read:
-            if((fi->flags & O_ACCMODE) != O_RDONLY) {
-                node->unlockmeta();
-                return -EACCES;
-            }
-        case cache_type::write:
-            fi->fh = (uint64_t) node;
-            node->opened++;
-            node->unlockmeta();
-            return 0;
-        case cache_type::status:
-            st = node->st;
-            node->unlockmeta();
+    switch(node->type){
+    case cache_type::read:
+        if((fi->flags & O_ACCMODE) != O_RDONLY) {
+            node->unlock();
+            return -EACCES;
         }
-    }else{
-        int ret = baidu_getattr(path, &st);
-        if (ret < 0) {
-            return ret;
+    case cache_type::write:
+        fi->fh = (uint64_t) node;
+        node->opened++;
+        node->unlock();
+        return 0;
+    case cache_type::status:
+        if((fi->flags & O_ACCMODE) != O_RDONLY) {
+            node->unlock();
+            return -EACCES;
         }
-    }
-    if ((fi->flags & O_ACCMODE) == O_RDONLY) {
-        inode_t *node = getnode(path, true);
         assert(node->type == cache_type::status);
         assert(node->opened == 0);
         assert(node->wcache == nullptr && node->rcache == nullptr);
-        
+
         node->rcache = new rfcache();
         node->type = cache_type::read;
         node->opened = 1;
-        node->st  = st;
         fi->fh = (uint64_t) node;
-        node->unlockmeta();
+        node->unlock();
         return 0;
     }
+    node->unlock();
     return -EACCES;
 }
 
@@ -1212,10 +1193,10 @@ int baidu_release(const char *path, struct fuse_file_info *fi)
 int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     inode_t *node = (inode_t *) fi->fh;
-    node->lockmeta();
+    node->lock();
     assert(node->type != cache_type::status);
     if (offset > node->st.st_size) {        //如果偏移超过文件长度
-        node->unlockmeta();
+        node->unlock();
         errno = EFAULT;
         return -errno;
     }
@@ -1224,9 +1205,9 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
         size = node->st.st_size - offset;
     }
     if(node->type ==  cache_type::read){
-        node->lockdate();
         int c = offset / RBS;  //计算一下在哪个块
         size_t p = c;
+        node->rcache->lock();
         do{             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
             if( p > node->st.st_size / RBS){
                 break;
@@ -1242,20 +1223,20 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
             }
             p++;
         }while (node->rcache->taskid.size() < RCACHEC);
-        node->unlockmeta();
+        node->unlock();
         if(node->rcache->taskid.count(c)){
             task_t taskid = node->rcache->taskid[c];
-            node->unlockdate();
+            node->rcache->unlock();
             waittask(taskid);
-            node->lockdate();
+            node->rcache->lock();
         }
         if (!(node->rcache->mask[c / 32] & (1 << (c % 32)))) {
-            node->unlockdate();
+            node->rcache->unlock();
             return baidu_read(path, buf, size, offset, fi);  //如果在这里返回那么读取出错,重试
         }
         size_t len = Min(size, (c + 1) * RBS - offset);      //计算最长能读取的字节
         ssize_t ret = pread(node->rcache->fd, buf, len, offset);
-        node->unlockdate();
+        node->rcache->unlock();
         if (ret != (ssize_t)len) {                   //读取出错了
             return ret;
         }
@@ -1270,10 +1251,10 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
 
         return ret;                         //成功返回
     }else{
-        node->lockdate();
+        node->wcache->lock();
         ssize_t ret = pread(node->wcache->fd,buf, size, offset);
-        node->unlockdate();
-        node->unlockmeta();
+        node->wcache->unlock();
+        node->unlock();
         return ret;
     }
 }
@@ -1458,28 +1439,29 @@ int baidu_mergertmpfile(const char *path, inode_t *node) {
  * 说实话，我并不知道这个flag原来实际上是什么用……
  */
 int filesync(inode_t *node){
-    node->lockmeta();
+    node->lock();
     if(node->flag & SYNCED){
-        node->unlockmeta();
+        node->unlock();
         return 0;
     }
-    node->lockdate();
     switch (node->type) {
     case cache_type::read:
+        node->rcache->lock();
         while(node->rcache->taskid.size()){
             task_t taskid = node->rcache->taskid.begin()->second;
-            node->unlockmeta();
-            node->unlockdate();
+            node->unlock();
+            node->rcache->unlock();
             waittask(taskid);
-            node->lockmeta();
-            node->lockdate();
+            node->lock();
+            node->rcache->lock();
         }
+        node->rcache->unlock();
         break;
     case cache_type::write:
+        node->wcache->lock();
         if ((size_t)node->st.st_size < LWBS) {
             while(baidu_uploadfile(node->getcwd().c_str(), node));
             node->wcache->flags[0] = 0;
-            time(&node->st.st_mtime);
         } else {
             int dirty;
             do {
@@ -1497,24 +1479,23 @@ int filesync(inode_t *node){
                         dirty = 1;
                     }
                 }
-                node->unlockmeta();
-                node->unlockdate();
+                node->unlock();
+                node->wcache->unlock();
                 for(auto i:waitset){
                     waittask(i);
                 }
-                node->lockmeta();
-                node->lockdate();
+                node->lock();
+                node->wcache->lock();
             }while(dirty);
             while (baidu_mergertmpfile(node->getcwd().c_str(), node));
-            time(&node->st.st_mtime);
         }
+        node->wcache->unlock();
         break;
     case cache_type::status:
         assert(0);
     }
-    node->unlockdate();
     node->flag |= SYNCED;
-    node->unlockmeta();
+    node->unlock();
     return 0;
 }
 
@@ -1536,18 +1517,18 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
     inode_t* node = (inode_t *) fi->fh;
     int c = GetWriteBlkNo(offset);   //计算一下在哪个块
     int len = Min(size, GetWriteBlkEndPointFromP(offset) - offset);      //计算最长能写入的字节
-    node->lockmeta();
+    node->lock();
     if(node->type == cache_type::write) {
         if(offset > node->st.st_size) {
             baidu_truncate(path, offset);
         }
         if (c && (node->wcache->flags[c] & WF_DIRTY) == 0) {
-            node->unlockmeta();
+            node->unlock();
             sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
-            node->lockmeta();
+            node->lock();
         }
         node->flag &= ~SYNCED;
-        node->lockdate();
+        node->wcache->lock();
         ssize_t ret = pwrite(node->wcache->fd,buf, len, offset);
         
         if (ret + offset > node->st.st_size) {      //文件长度被扩展
@@ -1569,8 +1550,8 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
                 node->wcache->taskid[i] = addtask((taskfunc) uploadblock, b, 0);
             }
         }
-        node->unlockdate();
-        node->unlockmeta();
+        node->wcache->unlock();
+        node->unlock();
         
         if (ret != len) {                   //返回真实写入长度
             return ret;
@@ -1586,7 +1567,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
         }
         return ret;
     }else{
-        node->unlockmeta();
+        node->unlock();
         errno = EPERM;
         return errno;
     }
@@ -1595,15 +1576,15 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
 //截断一个文件，只能截断读缓存中的文件，因为只有这种文件是可写的
 int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
     inode_t* node = (inode_t *) fi->fh;
-    node->lockmeta();
+    node->lock();
     node->flag &= ~SYNCED;
     int ret = ftruncate(node->wcache->fd, offset);
     if(ret) {
-        node->unlockmeta();
+        node->unlock();
         return ret;
     }
     node->st.st_size = offset;
-    node->unlockmeta();
+    node->unlock();
     int oc = GetWriteBlkNo(node->st.st_size); //原来的块数
     int nc = GetWriteBlkNo(offset);   //扩展后的块数
     if (offset > node->st.st_size) {      //文件长度被扩展
@@ -1611,18 +1592,18 @@ int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
             if (oc && (node->wcache->flags[oc] & WF_DIRTY) == 0) {
                 sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
             }
-            node->lockdate();
+            node->wcache->lock();
             node->wcache->flags[i] |= WF_DIRTY;
             if (node->wcache->flags[i] & WF_TRANS) {
                 node->wcache->flags[i] |= WF_REOPEN;
             }
-            node->unlockdate();
+            node->wcache->unlock();
         }
     }else{
         if (nc && (node->wcache->flags[nc] & WF_DIRTY) == 0) {
             sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
         }
-        node->lockdate();
+        node->wcache->lock();
         node->wcache->flags[nc] |= WF_DIRTY;
         if (node->wcache->flags[nc] & WF_TRANS) {
             node->wcache->flags[nc] |= WF_REOPEN;
@@ -1630,7 +1611,7 @@ int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
         for(int i=nc+1; i<=oc; ++i){
             node->wcache->flags[i] = 0;
         }
-        node->unlockdate();
+        node->wcache->unlock();
     }
     return 0;
 }
@@ -1638,12 +1619,33 @@ int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
 int baidu_truncate(const char* path, off_t offset) {
     inode_t *node = getnode(path, false);
     if (node) {
-        node->unlockmeta();
+        node->unlock();
         struct fuse_file_info fi;
         fi.fh = (uint64_t)node;
         return baidu_ftruncate(path, offset, &fi);
     }
     return -EACCES;
+}
+
+//only user.encrypt supported
+int baidu_getxattr(const char *path, const char *name, char *value, size_t len){
+    if(strcmp(name, "user.encrypt")){
+        return -ENODATA;
+    }
+    if(len == 0){
+        return sizeof(char);
+    }
+    if(len < sizeof(char)){
+        return -ERANGE;
+    }
+    inode_t *node = getnode(path, false);
+    if(node->flag & ENCRYPT){
+        value[0]='1';
+    }else{
+        value[0]='0';
+    }
+    node->unlock();
+    return sizeof(char);
 }
 
 
