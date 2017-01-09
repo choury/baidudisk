@@ -254,6 +254,7 @@ bool inode_t::clear_cache(){
         }
         if(i->second->type == cache_type::status){
             if(i->second->clear_cache()){
+                delete i->second;
                 i = child.erase(i);
             }
         }else{
@@ -262,7 +263,7 @@ bool inode_t::clear_cache(){
     }
     flag &= ~SYNCED;
     unlock();
-    return empty();;
+    return empty();
 }
 
 inode_t* inode_t::getnode(const string& path, bool create) {
