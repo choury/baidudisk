@@ -11,8 +11,8 @@
 #define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
 #define RBC            (uint64_t)81920            //读缓存个数, 最多20G
 #define WBC            (uint64_t)1024             //写缓存分块个数，百度定的，最大1024
-#define RCACHEC        30
-#define WCACHEC        10
+#define RCACHEC        10
+#define WCACHEC        5
     
 #define PATHLEN        1024
 
@@ -31,7 +31,8 @@ struct rfcache{
 
 struct wfcache{
     int fd;
-    char md5[WBC][35];
+    int dirty = 0;
+    char md5[WBC][34];
     std::map<uint32_t, task_t> taskid;
 //每一个block有3位标志位：是否为脏块, 是否在同步,同步时是否被写
 #define WF_DIRTY   1
@@ -39,9 +40,13 @@ struct wfcache{
 #define WF_REOPEN  4
     unsigned char flags[WBC];
     pthread_mutex_t Lock;
+    pthread_cond_t wait;
     wfcache();
     void lock();
     void unlock();
+    ssize_t write(const void* buf, size_t size, off_t offset);
+    int truncate(size_t size, off_t offset);
+    void synced(int bno, const char* md5);
     ~wfcache();
 };
 

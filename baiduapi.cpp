@@ -33,16 +33,7 @@ static const char *ak = "iN1yzFR9Sos27UWGEpjvKNVs";
 static const char *sk = "wiz77wrFfUGje0oGGOaG3kOU7T18dSg2";
 
 
-#define Min(x,y)   ((x)<(y)?(x):(y))
-#define Max(x,y)   ((x)>(y)?(x):(y))
-
-
-
 static char Access_Token[100];
-
-
-
-static sem_t wcache_sem;                                     //这个用来计算还有多少写缓存
 
 
 /*处理百度服务器返回的各种乱七八糟的错误码，转换成errno形式的
@@ -113,13 +104,14 @@ static size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
     if(bs->buf == nullptr){
         assert(bs->offset == 0);
         assert(bs->len == 0);
-        bs->buf = (char*)malloc(1024);
+        bs->buf = (char*)calloc(1024, 1);
         bs->len = 1024;
     }
     size_t len = size * nmemb;
     if(bs->offset + len > bs->len){
         bs->len = (bs->offset + len + 1023)/1024*1024;
         bs->buf = (char*)realloc(bs->buf, bs->len);
+        memset(bs->buf + bs->offset, 0, bs->len - bs->offset);
     }
     memcpy(bs->buf + bs->offset, buffer, len);
     bs->offset += len;
@@ -156,7 +148,7 @@ static size_t readfromfdxor(void *buffer, size_t size, size_t nmemb, void *user_
 static size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p)
 {
     buffstruct *bs = (buffstruct *) user_p;
-    size_t len = Min(size * nmemb, (bs->len) - bs->offset);
+    size_t len = std::min(size * nmemb, (bs->len) - bs->offset);
     memcpy(buffer, bs->buf + bs->offset, len);
     bs->offset += len;
     return len;
@@ -173,6 +165,7 @@ void job_handle(){
 typedef struct {
     inode_t *node;
     size_t  bno;
+    char path[PATHLEN];
 } block;
 
 
@@ -183,7 +176,7 @@ void readblock(block *tb) {
     size_t startp = b.bno * RBS;
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, b.node->getcwd().c_str());
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, b.path);
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=download&"
@@ -256,6 +249,11 @@ void uploadblock(block *tb) {
         buf = (char *)malloc(GetWriteBlkSize(b.bno));
         buffstruct read_bs = {0, GetWriteBlkSize(b.bno), buf};
         b.node->wcache->lock();
+        assert((b.node->wcache->flags[b.bno] & WF_TRANS) == 0);
+        if((b.node->wcache->flags[b.bno] & WF_DIRTY) == 0){
+            b.node->wcache->unlock();
+            break;
+        }
         b.node->wcache->flags[b.bno] |= WF_TRANS;
         read_bs.len = pread(b.node->wcache->fd, read_bs.buf, read_bs.len, GetWriteBlkStartPoint(b.bno));
         b.node->wcache->unlock();
@@ -277,6 +275,7 @@ void uploadblock(block *tb) {
 
         if ((errno = request(r)) != CURLE_OK) {
             errorlog("network error:%d\n", errno);
+            b.node->wcache->synced(b.bno, nullptr);
             Httpdestroy(r);
             break;
         }
@@ -299,17 +298,7 @@ void uploadblock(block *tb) {
 
         json_object *jmd5;
         if (json_object_object_get_ex(json_get, "md5",&jmd5)) {
-            b.node->wcache->lock();
-            b.node->wcache->flags[b.bno] &= ~WF_TRANS;
-            if (b.node->wcache->flags[b.bno] & WF_REOPEN) {
-                b.node->wcache->flags[b.bno] &= ~WF_REOPEN;
-            } else {
-                strcpy(b.node->wcache->md5[b.bno], json_object_get_string(jmd5));
-                b.node->wcache->flags[b.bno] &= ~WF_DIRTY;
-                if (b.bno)
-                    sem_post(&wcache_sem);
-            }
-            b.node->wcache->unlock();
+            b.node->wcache->synced(b.bno, json_object_get_string(jmd5));
             json_object_put(json_get);
         } else {
             errorlog("Did not get MD5:%s\n", json_object_to_json_string(json_get));
@@ -487,7 +476,6 @@ int refreshtoken() {
 
 //初始化，没什么好说的……
 void *baidu_init(struct fuse_conn_info *conn) {
-    sem_init(&wcache_sem, 0, WCACHEC);
     creatpool(THREADS);
     char basedir[PATHLEN];
     sprintf(basedir,"%s/.baidudisk",getenv("HOME"));
@@ -499,7 +487,6 @@ void *baidu_init(struct fuse_conn_info *conn) {
 }
 
 void baidu_destroy (void *){
-    sem_destroy(&wcache_sem);
 }
 
 //获得文件属性……
@@ -1156,6 +1143,7 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
                 block *b = (block *) malloc(sizeof(block));
                 b->node = node;
                 b->bno = p;
+                strcpy(b->path, node->getcwd().c_str());
                 node->rcache->taskid[p] = addtask((taskfunc) readblock, b, 0);
                 node->flag &= ~SYNCED;
             }
@@ -1172,7 +1160,7 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
             node->rcache->unlock();
             return baidu_read(path, buf, size, offset, fi);  //如果在这里返回那么读取出错,重试
         }
-        size_t len = Min(size, (c + 1) * RBS - offset);      //计算最长能读取的字节
+        size_t len = std::min(size, (c + 1) * RBS - offset);      //计算最长能读取的字节
         ssize_t ret = pread(node->rcache->fd, buf, len, offset);
         node->rcache->unlock();
         if (ret != (ssize_t)len) {                   //读取出错了
@@ -1297,7 +1285,7 @@ int baidu_mergertmpfile(const char *path, inode_t *node) {
 
     for (size_t i = 0; i <= GetWriteBlkNo(node->st.st_size); ++i) {
         json_object_array_add(jarray, json_object_new_string(node->wcache->md5[i]));
-    };
+    }
 
     json_object_object_add(jobj, "block_list", jarray);
     char param[36000];
@@ -1382,10 +1370,8 @@ int filesync(inode_t *node){
         node->rcache->lock();
         while(node->rcache->taskid.size()){
             task_t taskid = node->rcache->taskid.begin()->second;
-            node->unlock();
             node->rcache->unlock();
             waittask(taskid);
-            node->lock();
             node->rcache->lock();
         }
         node->rcache->unlock();
@@ -1394,7 +1380,7 @@ int filesync(inode_t *node){
         node->wcache->lock();
         if ((size_t)node->st.st_size < LWBS) {
             while(baidu_uploadfile(node->getcwd().c_str(), node));
-            node->wcache->flags[0] = 0;
+            node->wcache->synced(0, "");
         } else {
             int dirty;
             do {
@@ -1412,12 +1398,10 @@ int filesync(inode_t *node){
                         dirty = 1;
                     }
                 }
-                node->unlock();
                 node->wcache->unlock();
                 for(auto i:waitset){
                     waittask(i);
                 }
-                node->lock();
                 node->wcache->lock();
             }while(dirty);
             while (baidu_mergertmpfile(node->getcwd().c_str(), node));
@@ -1448,31 +1432,17 @@ int baidu_flush(const char * path, struct fuse_file_info *fi){
 int baidu_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
     inode_t* node = (inode_t *) fi->fh;
-    int c = GetWriteBlkNo(offset);   //计算一下在哪个块
-    int len = Min(size, GetWriteBlkEndPointFromP(offset) - offset);      //计算最长能写入的字节
-    node->lock();
     if(node->type == cache_type::write) {
         if(offset > node->st.st_size) {
-            baidu_truncate(path, offset);
+            baidu_ftruncate(path, offset, fi);
         }
-        if (c && (node->wcache->flags[c] & WF_DIRTY) == 0) {
-            node->unlock();
-            sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
-            node->lock();
-        }
-        node->flag &= ~SYNCED;
+        int ret = node->wcache->write(buf, size, offset);
+        node->lock();
         node->wcache->lock();
-        ssize_t ret = pwrite(node->wcache->fd,buf, len, offset);
-        
-        if (ret + offset > node->st.st_size) {      //文件长度被扩展
+        if(ret>0 && ret + offset > node->st.st_size){
             node->st.st_size = ret + offset;
         }
-        
-        node->wcache->flags[c] |= WF_DIRTY;
-        if (node->wcache->flags[c] & WF_TRANS) {
-            node->wcache->flags[c] |= WF_REOPEN;
-        }
-
+        node->flag &= ~SYNCED;
         for (size_t i = 0; i < GetWriteBlkNo(node->st.st_size); ++i) {
             if (node->wcache->taskid.count(i) == 0 &&
                 (node->wcache->flags[i] & WF_DIRTY))              //如果这个block是脏的那么加个上传任务
@@ -1485,19 +1455,6 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
         }
         node->wcache->unlock();
         node->unlock();
-        
-        if (ret != len) {                   //返回真实写入长度
-            return ret;
-        }
-        
-        if ((size_t)len < size) {                   //需要写入下一个block
-            int tmp = baidu_write(path, buf + len, size - len, offset + len, fi);
-            if (tmp < 0) {                  //调用出错
-                return tmp;
-            } else {
-                ret += tmp;
-            }
-        }
         return ret;
     }else{
         node->unlock();
@@ -1510,43 +1467,25 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
 int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
     inode_t* node = (inode_t *) fi->fh;
     node->lock();
-    node->flag &= ~SYNCED;
-    int ret = ftruncate(node->wcache->fd, offset);
-    if(ret) {
-        node->unlock();
-        return ret;
-    }
-    node->st.st_size = offset;
-    node->unlock();
-    int oc = GetWriteBlkNo(node->st.st_size); //原来的块数
-    int nc = GetWriteBlkNo(offset);   //扩展后的块数
-    if (offset > node->st.st_size) {      //文件长度被扩展
-        for(int i=oc; i<=nc; ++i){
-            if (oc && (node->wcache->flags[oc] & WF_DIRTY) == 0) {
-                sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
-            }
-            node->wcache->lock();
-            node->wcache->flags[i] |= WF_DIRTY;
-            if (node->wcache->flags[i] & WF_TRANS) {
-                node->wcache->flags[i] |= WF_REOPEN;
-            }
-            node->wcache->unlock();
-        }
-    }else{
-        if (nc && (node->wcache->flags[nc] & WF_DIRTY) == 0) {
-            sem_wait(&wcache_sem);                                           //不能有太多的block没有同步
-        }
+    int ret = node->wcache->truncate(node->st.st_size, offset);
+    if(ret == 0){
+        node->flag &= ~SYNCED;
+        node->st.st_size = offset;
         node->wcache->lock();
-        node->wcache->flags[nc] |= WF_DIRTY;
-        if (node->wcache->flags[nc] & WF_TRANS) {
-            node->wcache->flags[nc] |= WF_REOPEN;
-        }
-        for(int i=nc+1; i<=oc; ++i){
-            node->wcache->flags[i] = 0;
+        for (size_t i = 0; i < GetWriteBlkNo(node->st.st_size); ++i) {
+            if (node->wcache->taskid.count(i) == 0 &&
+                (node->wcache->flags[i] & WF_DIRTY))              //如果这个block是脏的那么加个上传任务
+            {
+                block *b = (block *)malloc(sizeof(block));
+                b->bno = i;
+                b->node = node;
+                node->wcache->taskid[i] = addtask((taskfunc) uploadblock, b, 0);
+            }
         }
         node->wcache->unlock();
     }
-    return 0;
+    node->unlock();
+    return ret;
 }
 
 int baidu_truncate(const char* path, off_t offset) {

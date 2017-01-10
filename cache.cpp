@@ -171,11 +171,96 @@ wfcache::wfcache(){
                               PTHREAD_MUTEX_RECURSIVE_NP);
     pthread_mutex_init(&Lock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
     pthread_mutexattr_destroy(&mutexattr);
+    pthread_cond_init(&wait, 0);
 }
 
 void wfcache::lock(){
     pthread_mutex_lock(&Lock);
 }
+
+int wfcache::truncate(size_t size, off_t offset){
+    int oc = GetWriteBlkNo(size); //原来的块数
+    int nc = GetWriteBlkNo(offset);   //扩展后的块数
+    lock();
+    int ret = ftruncate(fd, offset);
+    if(ret < 0){
+        unlock();
+        return -errno;
+    }
+    if ((size_t)offset > size) {      //文件长度被扩展
+        for(int i=oc; i<=nc; ++i){
+            if((flags[i] & WF_DIRTY) == 0){
+                flags[i] |= WF_DIRTY;
+                dirty ++;
+            }
+            if(flags[i] & WF_TRANS) {
+                flags[i] |= WF_REOPEN;
+            }
+        }
+    }else{
+        if((flags[nc] & WF_DIRTY) == 0){
+            flags[nc] |= WF_DIRTY;
+            dirty ++;
+        }
+        if(flags[nc] & WF_TRANS) {
+            flags[nc] |= WF_REOPEN;
+        }
+        for(int i=nc+1; i<=oc; ++i){
+            if(flags[i] & WF_DIRTY){
+                flags[i] &= ~WF_DIRTY;
+                dirty --;
+                pthread_cond_signal(&wait);
+            }
+        }
+    }
+    unlock();
+    return ret;
+}
+
+ssize_t wfcache::write(const void* buff, size_t size, off_t offset){
+    int c = GetWriteBlkNo(offset);   //计算一下在哪个块
+    int len = min(size, GetWriteBlkEndPointFromP(offset) - offset);      //计算最长能写入的字节
+    lock();
+    while(dirty >= WCACHEC) {
+        pthread_cond_wait(&wait, &Lock);
+    }
+    if((flags[c] & WF_DIRTY) == 0){
+        flags[c] |= WF_DIRTY;
+        dirty ++;
+    }
+    if(flags[c] & WF_TRANS) {
+        flags[c] |= WF_REOPEN;
+    }
+    ssize_t ret = pwrite(fd, buff, len, offset);
+    unlock();
+    if(ret < 0){
+        return -errno;
+    }
+    if(ret != len) {                   //返回真实写入长度
+        return ret;
+    }
+    if((size_t)ret < size){
+        int tmp = write((char *)buff+len, size-len, offset+len);
+        if(tmp< 0)
+            return tmp;
+        ret += tmp;
+    }
+    return ret;
+}
+
+void wfcache::synced(int bno, const char* md5) {
+    lock();
+    if((flags[bno] & WF_DIRTY) && (flags[bno] & WF_REOPEN) == 0  && md5){
+        strcpy(this->md5[bno], md5);
+        flags[bno] &= ~WF_DIRTY;
+        dirty --;
+        pthread_cond_signal(&wait);
+    }
+    flags[bno] &= ~WF_REOPEN;
+    flags[bno] &= ~WF_TRANS;
+    unlock();
+}
+
 
 void wfcache::unlock(){
     pthread_mutex_unlock(&Lock);
@@ -184,6 +269,7 @@ void wfcache::unlock(){
 wfcache::~wfcache(){
     close(fd);
     pthread_mutex_destroy(&Lock);
+    pthread_cond_destroy(&wait);
 }
 
 inode_t super_node(nullptr);
