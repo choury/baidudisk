@@ -1048,7 +1048,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     node->wcache = new wfcache();
     node->type = cache_type::write;
     node->opened = 1;
-    node->flag |= ENCRYPT;
+//    node->flag |= ENCRYPT;
     
     node->st.st_ino  = 1;
     node->st.st_nlink = 1;
