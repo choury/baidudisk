@@ -23,8 +23,6 @@ typedef struct Httprequest {
     CBfunc writefunc;               //读取服务器返回的数据
     void *writeprame;
     CURL *curl_handle;
-    void (*closefunc)(void *);
-    void *closeprame;
 }Http;
 
 typedef ssize_t (*ReadFunc)(const void *source,void *buff,size_t len);

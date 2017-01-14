@@ -264,7 +264,13 @@ CURLcode request(Http *r){
         return -1;
     }
 
-    return curl_easy_perform(r->curl_handle);
+    CURLcode curl_code = curl_easy_perform(r->curl_handle);
+    long http_code = 0;
+    curl_easy_getinfo(r->curl_handle, CURLINFO_RESPONSE_CODE, &http_code);
+    if(curl_code == CURLE_OK && (http_code >= 300 || http_code < 200)){
+        return http_code;
+    }
+    return curl_code;
 }
 
 
@@ -297,9 +303,6 @@ Http *Httpinit(const char *url){
 
 void Httpdestroy(Http *hh){
     releasecurl(hh->curl_handle);
-    if(hh->closefunc){
-        hh->closefunc(hh->closeprame);
-    }
     free(hh);
 }
 

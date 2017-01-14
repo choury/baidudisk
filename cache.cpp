@@ -26,48 +26,18 @@ static int tempfile() {
     return fd;
 }
 
-//获得写缓存块结束位置
-size_t GetWriteBlkEndPoint(size_t b)
-{
-    if (b < WBC / 2) {
-        return (b + 1) * LWBS;
-    } else {
-        return (b + 1) * HWBS - (HWBS - LWBS) * WBC / 2;
-    }
-}
-
-
-//获得写缓存块开始位置
-size_t GetWriteBlkStartPoint(size_t b)
-{
-    if (b <= WBC / 2) {
-        return b * LWBS;
-    } else {
-        return b * HWBS - (HWBS - LWBS) * WBC / 2;
-    }
-}
-
 //计算某位置在哪个块中,从0开始计数,分界点算在前一个块中
-size_t GetWriteBlkNo(size_t p)
+size_t GetBlkNo(size_t p)
 {
     if (p == 0)
         return 0;
-    if (p <= LWBS * WBC / 2) {
-        return (p - 1) / LWBS;
-    } else {
-        return WBC / 2 + (p - LWBS * WBC / 2 - 1) / HWBS;
-    }
+    return (p - 1) / BLOCKLEN;
 }
 
-//计算某位置所在的块的结束位置
-size_t GetWriteBlkEndPointFromP(size_t p)
+//计算某位置所在的块的结束位置,分界点算在后一个块中
+size_t GetBlkEndPointFromP(size_t p)
 {
-    if (p <= LWBS * WBC / 2) {
-        return p + LWBS - ((long)p - 1) % LWBS + 1;
-    } else {
-        p = p + (HWBS - LWBS) * WBC / 2;
-        return p + HWBS - ((long)p - 1) % HWBS + 1;
-    }
+    return p + BLOCKLEN - ((long)p + 1) % BLOCKLEN + 1;
 }
 
 string basename(const string& path) {
@@ -133,38 +103,17 @@ bool endwith(const string& s1, const string& s2){
 }
 
 string encodepath(const string& path){
-    return dirname(path)+Base64Encode(basename(path).c_str()) + ".enc";
+    return dirname(path)+Base64Encode(basename(path).c_str()) + ".def";
 }
 
-rfcache::rfcache(){
+string decodepath(const string& path){
+    assert(endwith(path, ".def"));
+    string base = basename(path);
+    return dirname(path)+Base64Decode(base.substr(0, base.length()-4).c_str());
+}
+
+fcache::fcache(){
     fd = tempfile();
-    memset(mask, 0, sizeof(mask));
-    pthread_mutexattr_t mutexattr;
-    pthread_mutexattr_init(&mutexattr);
-    pthread_mutexattr_settype(&mutexattr,        //让它可以递归加锁
-                              PTHREAD_MUTEX_RECURSIVE_NP);
-    pthread_mutex_init(&Lock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
-    pthread_mutexattr_destroy(&mutexattr);
-}
-
-void rfcache::lock(){
-    pthread_mutex_lock(&Lock);
-}
-
-void rfcache::unlock(){
-    pthread_mutex_unlock(&Lock);
-}
-
-rfcache::~rfcache(){
-    close(fd);
-    pthread_mutex_destroy(&Lock);
-}
-
-wfcache::wfcache(){
-    fd = tempfile();
-    memset(md5, 0, sizeof(md5));
-    memset(flags, 0, sizeof(flags));
-    
     pthread_mutexattr_t mutexattr;
     pthread_mutexattr_init(&mutexattr);
     pthread_mutexattr_settype(&mutexattr,        //让它可以递归加锁
@@ -174,13 +123,18 @@ wfcache::wfcache(){
     pthread_cond_init(&wait, 0);
 }
 
-void wfcache::lock(){
+void fcache::lock(){
     pthread_mutex_lock(&Lock);
 }
 
-int wfcache::truncate(size_t size, off_t offset){
-    int oc = GetWriteBlkNo(size); //原来的块数
-    int nc = GetWriteBlkNo(offset);   //扩展后的块数
+void fcache::unlock(){
+    pthread_mutex_unlock(&Lock);
+}
+
+
+int fcache::truncate(size_t size, off_t offset){
+    int oc = size / BLOCKLEN; //原来的块数
+    int nc = offset / BLOCKLEN;   //扩展后的块数
     lock();
     int ret = ftruncate(fd, offset);
     if(ret < 0){
@@ -189,25 +143,26 @@ int wfcache::truncate(size_t size, off_t offset){
     }
     if ((size_t)offset > size) {      //文件长度被扩展
         for(int i=oc; i<=nc; ++i){
-            if((flags[i] & WF_DIRTY) == 0){
-                flags[i] |= WF_DIRTY;
+            if((chunks[i].flag & BL_DIRTY) == 0){
+                chunks[i].flag |= BL_SYNCED;
+                chunks[i].flag |= BL_DIRTY;
                 dirty ++;
             }
-            if(flags[i] & WF_TRANS) {
-                flags[i] |= WF_REOPEN;
+            if(chunks[i].flag & BL_TRANS) {
+                chunks[i].flag |= BL_REOPEN;
             }
         }
     }else{
-        if((flags[nc] & WF_DIRTY) == 0){
-            flags[nc] |= WF_DIRTY;
+        if((chunks[nc].flag & BL_DIRTY) == 0){
+            chunks[nc].flag |= BL_DIRTY;
             dirty ++;
         }
-        if(flags[nc] & WF_TRANS) {
-            flags[nc] |= WF_REOPEN;
+        if(chunks[nc].flag & BL_TRANS) {
+            chunks[nc].flag |= BL_REOPEN;
         }
         for(int i=nc+1; i<=oc; ++i){
-            if(flags[i] & WF_DIRTY){
-                flags[i] &= ~WF_DIRTY;
+            if(chunks[i].flag & BL_DIRTY){
+                chunks[i].flag &= ~BL_DIRTY;
                 dirty --;
                 pthread_cond_signal(&wait);
             }
@@ -217,56 +172,43 @@ int wfcache::truncate(size_t size, off_t offset){
     return ret;
 }
 
-ssize_t wfcache::write(const void* buff, size_t size, off_t offset){
-    int c = GetWriteBlkNo(offset);   //计算一下在哪个块
-    int len = min(size, GetWriteBlkEndPointFromP(offset) - offset);      //计算最长能写入的字节
+ssize_t fcache::write(const void* buff, size_t size, off_t offset){
+    assert(size <= BLOCKLEN);
     lock();
-    while(dirty >= WCACHEC) {
+    size_t c = offset / BLOCKLEN;
+    while(dirty >= CACHEC) {
         pthread_cond_wait(&wait, &Lock);
     }
-    if((flags[c] & WF_DIRTY) == 0){
-        flags[c] |= WF_DIRTY;
+    if((chunks[c].flag & BL_DIRTY) == 0){
+        chunks[c].flag |= BL_DIRTY;
+        chunks[c].flag |= BL_SYNCED;
         dirty ++;
     }
-    if(flags[c] & WF_TRANS) {
-        flags[c] |= WF_REOPEN;
+    if(chunks[c].flag & BL_TRANS) {
+        chunks[c].flag |= BL_REOPEN;
     }
-    ssize_t ret = pwrite(fd, buff, len, offset);
+    ssize_t ret = pwrite(fd, buff, size, offset);
     unlock();
     if(ret < 0){
         return -errno;
     }
-    if(ret != len) {                   //返回真实写入长度
-        return ret;
-    }
-    if((size_t)ret < size){
-        int tmp = write((char *)buff+len, size-len, offset+len);
-        if(tmp< 0)
-            return tmp;
-        ret += tmp;
-    }
     return ret;
 }
 
-void wfcache::synced(int bno, const char* md5) {
+void fcache::synced(int bno, const char* path) {
+    assert(path);
+    assert(strlen(path) <= 19);
     lock();
-    if((flags[bno] & WF_DIRTY) && (flags[bno] & WF_REOPEN) == 0  && md5){
-        strcpy(this->md5[bno], md5);
-        flags[bno] &= ~WF_DIRTY;
+    if((chunks[bno].flag & BL_DIRTY) && (chunks[bno].flag & BL_REOPEN) == 0){
+        strcpy(chunks[bno].name, path);
+        chunks[bno].flag &= ~BL_DIRTY;
         dirty --;
         pthread_cond_signal(&wait);
     }
-    flags[bno] &= ~WF_REOPEN;
-    flags[bno] &= ~WF_TRANS;
     unlock();
 }
 
-
-void wfcache::unlock(){
-    pthread_mutex_unlock(&Lock);
-}
-
-wfcache::~wfcache(){
+fcache::~fcache(){
     close(fd);
     pthread_mutex_destroy(&Lock);
     pthread_cond_destroy(&wait);
@@ -290,14 +232,13 @@ inode_t::inode_t(inode_t *parent) {
 }
 
 inode_t::~inode_t(){
-    assert((type == cache_type::status && rcache == nullptr && wcache == nullptr) ||
-           (type == cache_type::read && rcache && wcache == nullptr) ||
-           (type == cache_type::write && rcache == nullptr && wcache));
     assert(child.size() == 1);
-    pthread_mutex_destroy(&Lock);
-    delete rcache;
-    delete wcache;
     del_job((job_func)cache_close, this);
+    pthread_mutex_destroy(&Lock);
+    if(blocklist){
+        free((char *)blocklist-sizeof(struct stat));
+    }
+    delete cache;
 }
 
 bool inode_t::empty(){
@@ -305,30 +246,25 @@ bool inode_t::empty(){
     return child.size() == 1;
 }
 
-const char* inode_t::add_cache(string path, struct stat st) {
+void inode_t::add_cache(string path, struct stat st) {
     lock();
-    int encrypted = 0;
     assert(basename(path) == path);
     if(path == "." || path == "/"){
         this->st = st;
         unlock();
-        return path.c_str();
+        return;
     }
-    if(S_ISREG(st.st_mode) && endwith(path, ".enc")){
-        encrypted = ENCRYPT;
-        path = Base64Decode(path.substr(0, path.length()-4).c_str());
+    if(S_ISDIR(st.st_mode) && endwith(path, ".def")){
+        baidu_getattr((getcwd()+"/"+path).c_str(), &st);
+        unlock();
+        return;
     }
-    assert(wcache == nullptr && rcache == nullptr && type == cache_type::status);
     if(child.count(path) == 0) {
         inode_t* i = new inode_t(this);
-        i->flag = encrypted;
         child[path] = i;
     }
-    if(child[path]->type != cache_type::write){
-        child[path]->st = st;
-    }
+    child[path]->st = st;
     unlock();
-    return path.c_str();
 }
 
 bool inode_t::clear_cache(){
@@ -338,11 +274,11 @@ bool inode_t::clear_cache(){
             i++;
             continue;
         }
-        if(i->second->type == cache_type::status){
-            if(i->second->clear_cache()){
-                delete i->second;
-                i = child.erase(i);
-            }
+        if(i->second->cache == nullptr &&
+           i->second->clear_cache())
+        {
+            delete i->second;
+            i = child.erase(i);
         }else{
             i++;
         }
@@ -356,7 +292,6 @@ inode_t* inode_t::getnode(const string& path, bool create) {
     if(path == "." || path == "/") {
         return this;
     } else {
-        assert(wcache == nullptr && rcache == nullptr && type == cache_type::status);
         string subpath = subname(path);
         string child_name = childname(path);
         if(child.count(child_name) == 0) {
@@ -407,9 +342,9 @@ string inode_t::getname(){
 string inode_t::getcwd(){
     lock();
     string path = getname();
-    if(flag & ENCRYPT){
+    if(flag & CHUNKED){
         assert(S_ISREG(st.st_mode));
-        path = Base64Encode(path.c_str()) + ".enc";
+        path = Base64Encode(path.c_str()) + ".def";
     }
     inode_t* p = this;
     while((p = p->child[".."])){
@@ -420,26 +355,25 @@ string inode_t::getcwd(){
 }
 
 int inode_t::filldir(void *buff, fuse_fill_dir_t filler){
-    assert(type == cache_type::status);
+    assert(cache == nullptr);
     int all = flag & SYNCED;
+    if(all)
+        filler(buff, ".", &st, 0);
     for (auto i : child) {
         if(i.first == ".."){
+            if(!all){
+                continue;
+            }
             if(i.second){
                 filler(buff, "..", &i.second->st, 0);
             }else{
                 assert(this == &super_node);
                 filler(buff, "..", nullptr, 0);
             }
-            continue;
-        }
-        if(all){
-            filler(buff, i.first.c_str(), &i.second->st, 0);
-        }else if(i.second->wcache && (i.second->flag & SYNCED) == 0){
-            assert(i.second->type == cache_type::write);
+        }else if(all || (i.second->cache && (i.second->flag & SYNCED) == 0)){
             filler(buff, i.first.c_str(), &i.second->st, 0);
         }
     } 
-    filler(buff, ".", &st, 0);
     return all;
 }
 
@@ -447,8 +381,7 @@ void inode_t::remove(){
     lock();
     inode_t* p = child[".."];
     p->child.erase(getname());
-    if(type == cache_type::status){
-        assert(wcache == nullptr && rcache == nullptr);
+    if(cache == nullptr){
         assert(empty()); //only ".."
         delete this;
         return;
@@ -466,8 +399,8 @@ void inode_t::remove(){
 
 void inode_t::release(){
     lock();
-    assert(type != cache_type::status);
-    filesync(this);
+    assert(cache);
+    filesync(this, 1);
     opened--;
     if(opened == 0){
         assert(flag & SYNCED);
@@ -513,17 +446,9 @@ void cache_close(inode_t* node){
     node->lock();
     if(node->opened == 0){
         assert(node->flag & SYNCED );
-        assert(node->type != cache_type::status);
-        if(node->wcache){
-            delete node->wcache;
-            node->wcache = nullptr;
-        }
-        if(node->rcache){
-            delete node->rcache;
-            node->rcache = nullptr;
-        }
-        node->type = cache_type::status;
-        node->st.st_mode = S_IFREG | 0444;
+        assert(node->cache);
+        delete node->cache;
+        node->cache = nullptr;
     }
     del_job((job_func)cache_close, node);
     node->unlock();

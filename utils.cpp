@@ -24,9 +24,9 @@ string URLEncode(const char* str) {
     string result;
     for (int i=0; i<strSize; ++i) {
         char ch = str[i];
-        if (((ch>='A') && (ch<'Z')) ||
-            ((ch>='a') && (ch<'z')) ||
-            ((ch>='0') && (ch<'9'))) {
+        if (((ch>='A') && (ch<='Z')) ||
+            ((ch>='a') && (ch<='z')) ||
+            ((ch>='0') && (ch<='9'))) {
             result += ch;
         } else if (ch == ' ') {
             result += '+';

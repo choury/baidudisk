@@ -6,70 +6,53 @@
 #include <map>
 #include <string>
 
-#define RBS            (uint64_t)0x40000          //256K,读缓存分块大小
-#define LWBS           (uint64_t)0x800000         //8M,前一半分块大小
-#define HWBS           (uint64_t)0x2000000        //32M,后一半分块大小
-#define RBC            (uint64_t)81920            //读缓存个数, 最多20G
-#define WBC            (uint64_t)1024             //写缓存分块个数，百度定的，最大1024
-#define RCACHEC        10
-#define WCACHEC        5
+#define BLOCKLEN      (uint64_t)0x100000          //1M,缓存分块大小
+#define CACHEC        10
     
 #define PATHLEN        1024
 
 
-
-struct rfcache{
-    int fd;
-    unsigned int mask[RBC/32+1];                //为1代表已经从服务器成功读取
-    std::map<uint32_t, task_t> taskid;
-    pthread_mutex_t Lock;
-    rfcache();
-    void lock();
-    void unlock();
-    ~rfcache();
+struct fblock{
+    char name[20];
+#define BL_SYNCED  1
+#define BL_DIRTY   2
+#define BL_TRANS   4
+#define BL_REOPEN  8
+    unsigned char flag = 0;
 };
 
-struct wfcache{
+struct fcache{
     int fd;
-    int dirty = 0;
-    char md5[WBC][34];
-    std::map<uint32_t, task_t> taskid;
-//每一个block有3位标志位：是否为脏块, 是否在同步,同步时是否被写
-#define WF_DIRTY   1
-#define WF_TRANS   2
-#define WF_REOPEN  4
-    unsigned char flags[WBC];
+    size_t dirty = 0;
     pthread_mutex_t Lock;
     pthread_cond_t wait;
-    wfcache();
+    std::map<uint32_t, fblock> chunks;
+    std::map<uint32_t, task_t> taskid;
+    fcache();
     void lock();
     void unlock();
-    ssize_t write(const void* buf, size_t size, off_t offset);
+    void synced(int bno, const char* path);
     int truncate(size_t size, off_t offset);
-    void synced(int bno, const char* md5);
-    ~wfcache();
+    ssize_t write(const void* buff, size_t size, off_t offset);
+    ~fcache();
 };
-
-
-enum class cache_type{status, read, write};
 
 struct inode_t {
 private:
     pthread_mutex_t Lock;
     std::map<std::string, inode_t*> child;
 public:
-    cache_type type = cache_type::status;
     struct stat st;
+    char (*blocklist)[20] = nullptr;
+    fcache* cache = nullptr;
 #define SYNCED         1                        //是否已同步
-#define ENCRYPT        2                        //加密文件
+#define CHUNKED        2                        //加密文件
     uint32_t flag = 0;
     uint32_t opened = 0;
-    rfcache* rcache = nullptr;
-    wfcache* wcache = nullptr;
     inode_t(inode_t *parent);
     ~inode_t();
     bool empty();
-    const char* add_cache(std::string path, struct stat st);
+    void add_cache(std::string path, struct stat st);
     bool clear_cache();
     inode_t* getnode(const std::string& path, bool create);
     const struct stat* getstat(const std::string& path);
@@ -84,17 +67,14 @@ public:
     friend void inode_release(inode_t* node);
 };
 
-typedef void (*eachfunc)(inode_t* node);
+size_t GetBlkNo(size_t p);
+size_t GetBlkEndPointFromP(size_t p);
 
-size_t GetWriteBlkStartPoint(size_t b);
-size_t GetWriteBlkEndPoint(size_t b);
-size_t GetWriteBlkNo(size_t p);
-size_t GetWriteBlkEndPointFromP(size_t p);
-#define GetWriteBlkSize(b)  ((b)<WBC/2?LWBS:HWBS)
 
 std::string dirname(const std::string& path);
 std::string basename(const std::string& path);
 std::string encodepath(const std::string& path);
+std::string decodepath(const std::string& path);
 bool endwith(const std::string& s1, const std::string& s2);
 
 inode_t* getnode(const char *path, bool create);
