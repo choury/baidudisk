@@ -4,10 +4,11 @@
 #include "threadpool.h"
 #include <time.h>
 #include <map>
+#include <set>
 #include <string>
 
 #define BLOCKLEN      (uint64_t)0x100000          //1M,缓存分块大小
-#define CACHEC        10
+#define CACHEC        20
     
 #define PATHLEN        1024
 
@@ -28,6 +29,7 @@ struct fcache{
     pthread_cond_t wait;
     std::map<uint32_t, fblock> chunks;
     std::map<uint32_t, task_t> taskid;
+    std::set<std::string> droped;
     fcache();
     void lock();
     void unlock();
@@ -46,7 +48,8 @@ public:
     char (*blocklist)[20] = nullptr;
     fcache* cache = nullptr;
 #define SYNCED         1                        //是否已同步
-#define CHUNKED        2                        //加密文件
+#define DIRTY          2                        //是否已修改
+#define CHUNKED        4                        //加密文件
     uint32_t flag = 0;
     uint32_t opened = 0;
     inode_t(inode_t *parent);

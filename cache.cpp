@@ -135,6 +135,7 @@ void fcache::unlock(){
 int fcache::truncate(size_t size, off_t offset){
     int oc = size / BLOCKLEN; //原来的块数
     int nc = offset / BLOCKLEN;   //扩展后的块数
+    assert(size != (size_t)offset);
     lock();
     int ret = ftruncate(fd, offset);
     if(ret < 0){
@@ -162,10 +163,13 @@ int fcache::truncate(size_t size, off_t offset){
         }
         for(int i=nc+1; i<=oc; ++i){
             if(chunks[i].flag & BL_DIRTY){
-                chunks[i].flag &= ~BL_DIRTY;
                 dirty --;
                 pthread_cond_signal(&wait);
             }
+            if(chunks[i].name[0]){
+                droped.insert(chunks[i].name);
+            }
+            chunks.erase(i);
         }
     }
     unlock();
@@ -199,11 +203,18 @@ void fcache::synced(int bno, const char* path) {
     assert(path);
     assert(strlen(path) <= 19);
     lock();
-    if((chunks[bno].flag & BL_DIRTY) && (chunks[bno].flag & BL_REOPEN) == 0){
+    if(chunks.count(bno) &&
+       (chunks[bno].flag & BL_REOPEN) == 0)
+    {
+        if(chunks[bno].name[0]){
+            droped.insert(chunks[bno].name);
+        }
         strcpy(chunks[bno].name, path);
         chunks[bno].flag &= ~BL_DIRTY;
         dirty --;
         pthread_cond_signal(&wait);
+    }else{
+        droped.insert(path);
     }
     unlock();
 }
@@ -358,13 +369,10 @@ void inode_t::filldir(void *buff, fuse_fill_dir_t filler){
     assert(cache == nullptr);
     filler(buff, ".", &st, 0);
     for (auto i : child) {
-        if(i.first == ".."){
-            if(i.second){
-                filler(buff, "..", &i.second->st, 0);
-            }else{
-                assert(this == &super_node);
-                filler(buff, "..", nullptr, 0);
-            }
+        if(i.second == nullptr){
+            assert(i.first == "..");
+            assert(this == &super_node);
+            filler(buff, "..", nullptr, 0);
         }else{
             filler(buff, i.first.c_str(), &i.second->st, 0);
         }

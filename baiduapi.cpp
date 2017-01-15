@@ -119,7 +119,7 @@ static int handleerror(const char *msg)
         return ret; \
     }\
     if(ret != CURLE_OK) { \
-        errorlog("network error:%d\n", errno); \
+        errorlog("network error:%d\n", ret); \
         free(bs.buf); \
         return -EPROTO;\
     }
@@ -264,11 +264,12 @@ void uploadblock(block *tb) {
         buf = (char *)malloc(BLOCKLEN);
         buffstruct read_bs = {0, BLOCKLEN, buf};
         b.node->cache->lock();
-        assert((b.node->cache->chunks[b.bno].flag & BL_TRANS) == 0);
-        if((b.node->cache->chunks[b.bno].flag & BL_DIRTY) == 0){
+        if((b.node->cache->chunks.count(b.bno)) == 0){ //it was truncated
             b.node->cache->unlock();
             break;
         }
+        assert(b.node->cache->chunks[b.bno].flag & BL_DIRTY);
+        assert((b.node->cache->chunks[b.bno].flag & BL_TRANS) == 0);
         b.node->cache->chunks[b.bno].flag |= BL_TRANS;
         read_bs.len = pread(b.node->cache->fd, read_bs.buf, read_bs.len, b.bno*BLOCKLEN);
         b.node->cache->unlock();
@@ -1192,6 +1193,59 @@ int baidu_uploadfile(const char *path, inode_t* node) {
 }
 #endif
 
+int trim(inode_t *node){
+    assert(node->cache);
+    char buff[2048];
+    std::string fullpath = std::string(basepath) + node->getcwd();
+    snprintf(buff, sizeof(buff) - 1,
+             "https://pcs.baidu.com/rest/2.0/pcs/file?"
+             "method=delete&"
+             "access_token=%s&" , Access_Token);
+    std::string param = "param=";
+    json_object *jobj = json_object_new_object();
+    json_object *jarray = json_object_new_array();
+
+    node->cache->lock();
+    if(node->cache->droped.empty()){
+        node->cache->unlock();
+        return 0;
+    }
+    for(auto i: node->cache->droped) {
+        json_object *jpath = json_object_new_object();
+        json_object_object_add(jpath, "path", json_object_new_string((fullpath+"/"+i).c_str()));
+        json_object_array_add(jarray, jpath);
+    }
+    node->cache->droped.clear();
+    node->cache->unlock();
+    json_object_object_add(jobj, "list", jarray);
+    param += json_object_to_json_string(jobj);
+    json_object_put(jobj);
+
+    buffstruct read_bs = {0, (size_t)param.size(), (char *)param.data()};
+    Http *r = Httpinit(buff);
+
+    if (r == NULL) {
+        int lasterrno = errno;
+        errorlog("can't resolve domain:%s\n", strerror(errno));
+        return -lasterrno;
+    }
+
+    r->method = Httprequest::post_x_www_form_urlencoded;
+    r->readfunc = readfrombuff;
+    r->readprame = &read_bs;
+    r->length = read_bs.len;
+
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+
+    int ret = request(r);
+    Httpdestroy(r);
+    ERROR_CHECK(ret);
+
+    free(bs.buf);
+    return 0;
+}
 
 //把上传的临时文件合并成一个文件
 int baidu_uploadmeta(inode_t *node) {
@@ -1240,6 +1294,7 @@ int baidu_uploadmeta(inode_t *node) {
     ERROR_CHECK(ret);
 
     free(bs.buf);
+    addtask((taskfunc)trim, node, 0);
     return 0;
 }
 
@@ -1251,17 +1306,21 @@ int baidu_uploadmeta(inode_t *node) {
  */
 int filesync(inode_t *node, int sync_meta){
     node->lock();
-    if(node->flag & SYNCED){
+    if(node->flag & SYNCED ||node->cache == nullptr || node->st.st_nlink == 0){
         node->unlock();
+        node->flag |= SYNCED;
         return 0;
     }
-    if(node->cache == nullptr){
-        node->flag |= SYNCED;
-    }else if(node->flag & CHUNKED){
+    node->cache->lock();
+    while(node->cache->taskid.size()){
+        task_t taskid = node->cache->taskid.begin()->second;
+        node->cache->unlock();
+        waittask(taskid);
         node->cache->lock();
-        int dirty;
-        do {
-            dirty = 0;
+    }
+    if((node->flag & CHUNKED) && (node->flag & DIRTY)){
+        while(node->flag & DIRTY){
+            node->flag &= ~DIRTY;
             std::set<task_t> waitset;
             for (size_t i = 0; i <= GetBlkNo(node->st.st_size); ++i) {
                 if (node->cache->taskid.count(i)) {
@@ -1274,7 +1333,7 @@ int filesync(inode_t *node, int sync_meta){
                     task_t taskid = addtask((taskfunc) uploadblock, b, 0);
                     node->cache->taskid[i] = taskid;
                     waitset.insert(taskid);
-                    dirty = 1;
+                    node->flag |= DIRTY;
                 }
             }
             node->cache->unlock();
@@ -1282,23 +1341,15 @@ int filesync(inode_t *node, int sync_meta){
                 waittask(i);
             }
             node->cache->lock();
-        }while(dirty);
+        }
         if(sync_meta){
             while (baidu_uploadmeta(node));
             node->flag |= SYNCED;
         }
-        node->cache->unlock();
     }else{
-        node->cache->lock();
-        while(node->cache->taskid.size()){
-            task_t taskid = node->cache->taskid.begin()->second;
-            node->cache->unlock();
-            waittask(taskid);
-            node->cache->lock();
-        }
-        node->cache->unlock();
         node->flag |= SYNCED;
     }
+    node->cache->unlock();
     node->unlock();
     return 0;
 }
@@ -1361,6 +1412,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
         node->st.st_size = ret + offset;
     }
     node->flag &= ~SYNCED;
+    node->flag |= DIRTY;
     node->cache->lock();
     for (size_t i = 0; i < GetBlkNo(node->st.st_size); ++i) {
         if (node->cache->taskid.count(i) == 0 &&
@@ -1396,6 +1448,7 @@ int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
     int ret = node->cache->truncate(node->st.st_size, offset);
     if(ret == 0){
         node->flag &= ~SYNCED;
+        node->flag |= DIRTY;
         node->st.st_size = offset;
         node->cache->lock();
         for (size_t i = 0; i < GetBlkNo(node->st.st_size); ++i) {
