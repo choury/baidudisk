@@ -59,7 +59,7 @@ public:
     void move(const std::string& path);
     std::string getcwd();
     std::string getname();
-    int filldir(void *buff, fuse_fill_dir_t filler);
+    void filldir(void* buff, fuse_fill_dir_t filler);
     int lock();
     int unlock();
     void remove();

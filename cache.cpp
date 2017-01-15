@@ -354,27 +354,21 @@ string inode_t::getcwd(){
     return path;
 }
 
-int inode_t::filldir(void *buff, fuse_fill_dir_t filler){
+void inode_t::filldir(void *buff, fuse_fill_dir_t filler){
     assert(cache == nullptr);
-    int all = flag & SYNCED;
-    if(all)
-        filler(buff, ".", &st, 0);
+    filler(buff, ".", &st, 0);
     for (auto i : child) {
         if(i.first == ".."){
-            if(!all){
-                continue;
-            }
             if(i.second){
                 filler(buff, "..", &i.second->st, 0);
             }else{
                 assert(this == &super_node);
                 filler(buff, "..", nullptr, 0);
             }
-        }else if(all || (i.second->cache && (i.second->flag & SYNCED) == 0)){
+        }else{
             filler(buff, i.first.c_str(), &i.second->st, 0);
         }
     } 
-    return all;
 }
 
 void inode_t::remove(){

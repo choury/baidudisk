@@ -616,7 +616,8 @@ int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t off
     (void) offset;
     inode_t* node = getnode(path, true);
     assert(node->cache == nullptr);
-    if(node->filldir(buf, filler)){
+    if(node->flag & SYNCED){
+        node->filldir(buf, filler);
         node->unlock();
         return 0;
     }
