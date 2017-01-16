@@ -7,7 +7,9 @@
 #include <set>
 #include <string>
 
-#define BLOCKLEN      (uint64_t)0x100000          //1M,缓存分块大小
+#include <json-c/json.h>
+
+#define BLOCKLEN      (uint64_t)0x100000          //1M,缓存分块大小 必须为4K的倍数
 #define CACHEC        20
     
 #define PATHLEN        1024
@@ -34,8 +36,8 @@ struct fcache{
     void lock();
     void unlock();
     void synced(int bno, const char* path);
-    int truncate(size_t size, off_t offset);
-    ssize_t write(const void* buff, size_t size, off_t offset);
+    int truncate(size_t size, off_t offset, blksize_t blksize);
+    ssize_t write(const void* buff, size_t size, off_t offset, blksize_t blksize);
     ~fcache();
 };
 
@@ -45,7 +47,7 @@ private:
     std::map<std::string, inode_t*> child;
 public:
     struct stat st;
-    char (*blocklist)[20] = nullptr;
+    json_object *blocklist = nullptr;
     fcache* cache = nullptr;
 #define SYNCED         1                        //是否已同步
 #define DIRTY          2                        //是否已修改
@@ -55,7 +57,7 @@ public:
     inode_t(inode_t *parent);
     ~inode_t();
     bool empty();
-    void add_cache(std::string path, struct stat st);
+    inode_t* add_cache(std::string path, struct stat st);
     bool clear_cache();
     inode_t* getnode(const std::string& path, bool create);
     const struct stat* getstat(const std::string& path);
@@ -70,8 +72,8 @@ public:
     friend void inode_release(inode_t* node);
 };
 
-size_t GetBlkNo(size_t p);
-size_t GetBlkEndPointFromP(size_t p);
+size_t GetBlkNo(size_t p, blksize_t blksize);
+size_t GetBlkEndPointFromP(size_t p, blksize_t blksize);
 
 
 std::string dirname(const std::string& path);

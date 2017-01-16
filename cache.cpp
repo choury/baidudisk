@@ -27,17 +27,19 @@ static int tempfile() {
 }
 
 //计算某位置在哪个块中,从0开始计数,分界点算在前一个块中
-size_t GetBlkNo(size_t p)
+size_t GetBlkNo(size_t p, blksize_t blksize)
 {
+    assert(blksize);
     if (p == 0)
         return 0;
-    return (p - 1) / BLOCKLEN;
+    return (p - 1) / blksize;
 }
 
 //计算某位置所在的块的结束位置,分界点算在后一个块中
-size_t GetBlkEndPointFromP(size_t p)
+size_t GetBlkEndPointFromP(size_t p, blksize_t blksize)
 {
-    return p + BLOCKLEN - ((long)p + 1) % BLOCKLEN + 1;
+    assert(blksize);
+    return p + blksize - ((long)p + 1) % blksize + 1;
 }
 
 string basename(const string& path) {
@@ -132,9 +134,9 @@ void fcache::unlock(){
 }
 
 
-int fcache::truncate(size_t size, off_t offset){
-    int oc = size / BLOCKLEN; //原来的块数
-    int nc = offset / BLOCKLEN;   //扩展后的块数
+int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
+    int oc = size / blksize; //原来的块数
+    int nc = offset / blksize;   //扩展后的块数
     assert(size != (size_t)offset);
     lock();
     int ret = ftruncate(fd, offset);
@@ -176,10 +178,10 @@ int fcache::truncate(size_t size, off_t offset){
     return ret;
 }
 
-ssize_t fcache::write(const void* buff, size_t size, off_t offset){
-    assert(size <= BLOCKLEN);
+ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blksize){
+    assert(size <= (size_t)blksize);
     lock();
-    size_t c = offset / BLOCKLEN;
+    size_t c = offset / blksize;
     while(dirty >= CACHEC) {
         pthread_cond_wait(&wait, &Lock);
     }
@@ -247,7 +249,7 @@ inode_t::~inode_t(){
     del_job((job_func)cache_close, this);
     pthread_mutex_destroy(&Lock);
     if(blocklist){
-        free((char *)blocklist-sizeof(struct stat));
+        json_object_put(blocklist);
     }
     delete cache;
 }
@@ -257,25 +259,25 @@ bool inode_t::empty(){
     return child.size() == 1;
 }
 
-void inode_t::add_cache(string path, struct stat st) {
+inode_t* inode_t::add_cache(string path, struct stat st) {
     lock();
     assert(basename(path) == path);
     if(path == "." || path == "/"){
         this->st = st;
-        unlock();
-        return;
+        return this;
     }
     if(S_ISDIR(st.st_mode) && endwith(path, ".def")){
         baidu_getattr((getcwd()+"/"+path).c_str(), &st);
-        unlock();
-        return;
+        return this;
     }
     if(child.count(path) == 0) {
-        inode_t* i = new inode_t(this);
-        child[path] = i;
+        child[path] = new inode_t(this);
     }
-    child[path]->st = st;
+    inode_t* i = child[path];
+    i->st = st;
+    i->lock();
     unlock();
+    return i;
 }
 
 bool inode_t::clear_cache(){
