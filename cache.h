@@ -16,7 +16,7 @@
 
 
 struct fblock{
-    char name[20];
+    std::string name;
 #define BL_SYNCED  1
 #define BL_DIRTY   2
 #define BL_TRANS   4

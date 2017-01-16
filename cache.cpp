@@ -203,7 +203,6 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
 
 void fcache::synced(int bno, const char* path) {
     assert(path);
-    assert(strlen(path) <= 19);
     lock();
     if(chunks.count(bno) &&
        (chunks[bno].flag & BL_REOPEN) == 0)
@@ -211,7 +210,7 @@ void fcache::synced(int bno, const char* path) {
         if(chunks[bno].name[0]){
             droped.insert(chunks[bno].name);
         }
-        strcpy(chunks[bno].name, path);
+        chunks[bno].name = path;
         chunks[bno].flag &= ~BL_DIRTY;
         dirty --;
         pthread_cond_signal(&wait);

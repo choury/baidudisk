@@ -249,9 +249,9 @@ void uploadblock(block *tb) {
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=upload&"
              "access_token=%s&"
-             "path=%s/%d&"
+             "path=%s/%zu&"
              "ondup=newcopy"
-             , Access_Token, URLEncode(fullpath).c_str(), (int)b.bno%10);
+             , Access_Token, URLEncode(fullpath).c_str(), b.bno);
 
     char *buf = nullptr;
     do{
@@ -1005,6 +1005,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     node->cache = new fcache();
     node->opened = 1;
     node->flag |= CHUNKED;
+    node->flag |= DIRTY;
     
     node->st.st_ino  = 1;
     node->st.st_nlink = 1;
@@ -1048,7 +1049,7 @@ int baidu_open(const char *path, struct fuse_file_info *fi) {
     if(node->blocklist){
         for (int i = 0; i < json_object_array_length(node->blocklist); ++i) {
             json_object *block = json_object_array_get_idx(node->blocklist, i);
-            strcpy(node->cache->chunks[i].name, json_object_get_string(block));
+            node->cache->chunks[i].name = json_object_get_string(block);
         }
 
     }
@@ -1100,7 +1101,7 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
             b->bno = p;
             b->blksize = node->st.st_blksize;
             if(node->flag & CHUNKED){
-                sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->cache->chunks[p].name);
+                sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->cache->chunks[p].name.c_str());
             }else{
                 strcpy(b->path, node->getcwd().c_str());
             }
@@ -1295,10 +1296,10 @@ int baidu_uploadmeta(inode_t *node) {
     json_object_object_add(jobj, "ctime", json_object_new_int64(node->st.st_ctime));
     json_object_object_add(jobj, "mtime", json_object_new_int64(node->st.st_mtime));
     json_object_object_add(jobj, "blksize", json_object_new_int64(node->st.st_blksize));
-    json_object_object_add(jobj, "encode", json_object_new_string("none"));
+    json_object_object_add(jobj, "encoding", json_object_new_string("none"));
     node->blocklist = json_object_new_array();
     for (size_t i = 0; i <= GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-         json_object_array_add(node->blocklist, json_object_new_string(node->cache->chunks[i].name));
+         json_object_array_add(node->blocklist, json_object_new_string(node->cache->chunks[i].name.c_str()));
     }
     json_object_object_add(jobj, "block_list", json_object_get(node->blocklist));
     const char *jstring = json_object_to_json_string(jobj);
@@ -1350,7 +1351,7 @@ int filesync(inode_t *node, int sync_meta){
         waittask(taskid);
         node->cache->lock();
     }
-    if((node->flag & CHUNKED) && (node->flag & DIRTY)){
+    if((node->flag & CHUNKED)){
         while(node->flag & DIRTY){
             node->flag &= ~DIRTY;
             std::set<task_t> waitset;
@@ -1375,7 +1376,7 @@ int filesync(inode_t *node, int sync_meta){
             }
             node->cache->lock();
         }
-        if(sync_meta){
+        if(sync_meta && (node->flag & SYNCED) == 0){
             while (baidu_uploadmeta(node));
             node->flag |= SYNCED;
         }
@@ -1387,7 +1388,7 @@ int filesync(inode_t *node, int sync_meta){
     return 0;
 }
 
-int baidu_fsync(const char *, int flag, struct fuse_file_info *fi) {
+int baidu_fsync(const char *path, int flag, struct fuse_file_info *fi) {
     inode_t *node = (inode_t *) fi->fh;
     return filesync(node, flag);
 }
@@ -1426,7 +1427,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
             b->node = node;
             b->bno = c;
             b->blksize = node->st.st_blksize;
-            sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->cache->chunks[c].name);
+            sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->cache->chunks[c].name.c_str());
             node->cache->taskid[c] = addtask((taskfunc) readblock, b, 0);
         }
         if(node->cache->taskid.count(c)){
