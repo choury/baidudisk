@@ -15,15 +15,16 @@ int hex2num(char c)
     return '0';
 }
 
-string URLEncode(const char* str) {
-    int strSize=strlen(str);
+string URLEncode(const char* s) {
+    int strSize=strlen(s);
+    const unsigned char *str = (const unsigned char*)s;
 
     if ((str==NULL) || (strSize==0) ) {
         return NULL;
     }
     string result;
     for (int i=0; i<strSize; ++i) {
-        char ch = str[i];
+        unsigned char ch = str[i];
         if (((ch>='A') && (ch<='Z')) ||
             ((ch>='a') && (ch<='z')) ||
             ((ch>='0') && (ch<='9'))) {
@@ -34,7 +35,7 @@ string URLEncode(const char* str) {
             result += ch;
         } else {
             char tmp[4];
-            sprintf(tmp, "%%%02X", (unsigned char)ch);
+            sprintf(tmp, "%%%02X", ch);
             result += tmp;
         }
     }
@@ -77,10 +78,11 @@ string URLDecode(const char* str) {
 
 static const char *base64_endigs="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-string Base64Encode(const char *src, size_t len){
+string Base64Encode(const char *s, size_t len){
     string dst;
     size_t i=0;
-    len = len?len:strlen(src);
+    len = len?len:strlen(s);
+    const unsigned char *src = (const unsigned char*)s;
     for(;i+2<len;i+=3){
         dst += base64_endigs[src[i]>>2];
         dst += base64_endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
@@ -102,11 +104,11 @@ string Base64Encode(const char *src, size_t len){
 
 static const char base64_dedigs[128] = 
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
- 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,63,
+ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
  0,0,0,0,0,0,0,0,0,0,0,0,0,62,0,0,
  52,53,54,55,56,57,58,59,60,61,0,0,0,0,0,0,
  0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,
- 15,16,17,18,19,20,21,22,23,24,25,0,0,0,0,0,
+ 15,16,17,18,19,20,21,22,23,24,25,0,0,0,0,63,
  0,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
  41,42,43,44,45,46,47,48,49,50,51,0,0,0,0,0};
 

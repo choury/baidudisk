@@ -94,7 +94,11 @@ static int handleerror(const char *msg)
     case 31066:
         errno = ENOENT;
         break;
-
+        
+    case 31074:
+        errno = EISDIR;
+        break;
+        
     case 31202:
         errno = ENOENT;
         break;
@@ -544,7 +548,7 @@ int baidu_getattr(const char *path, struct stat *st) {
     if (ret > CURL_LAST) {
         ret = handleerror(bs.buf);
         free(bs.buf);
-        if(ret == -ENOENT && !chunked){
+        if((ret == -ENOENT || ret == -EINVAL ) && !chunked){
             return baidu_getattr(encodepath(path).c_str(), st);
         }
         return ret;
@@ -1084,6 +1088,10 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
 
     if (offset + size > (size_t)node->st.st_size) {   //如果剩余长度不足size，则最多读到文件末尾
         size = node->st.st_size - offset;
+    }
+    if(size == 0){
+        node->unlock();
+        return 0;
     }
     blksize_t blksize = node->st.st_blksize;
     int c = offset / blksize;  //计算一下在哪个块

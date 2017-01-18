@@ -105,7 +105,11 @@ bool endwith(const string& s1, const string& s2){
 }
 
 string encodepath(const string& path){
-    return dirname(path)+Base64Encode(basename(path).c_str()) + ".def";
+    if(dirname(path) == "."){
+        return Base64Encode(basename(path).c_str()) + ".def";
+    }else{
+        return dirname(path)+Base64Encode(basename(path).c_str()) + ".def";
+    }
 }
 
 string decodepath(const string& path){
@@ -356,7 +360,7 @@ string inode_t::getcwd(){
     string path = getname();
     if(flag & CHUNKED){
         assert(S_ISREG(st.st_mode));
-        path = Base64Encode(path.c_str()) + ".def";
+        path = encodepath(path);
     }
     inode_t* p = this;
     while((p = p->child[".."])){
