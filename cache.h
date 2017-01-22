@@ -41,26 +41,39 @@ struct fcache{
     ~fcache();
 };
 
+struct inode_t;
+
+struct dcache{
+    pthread_mutex_t Lock;
+    std::map<std::string, inode_t*> entry;
+    std::map<std::string, task_t> taskid;
+    dcache();
+    void lock();
+    void unlock();
+    ~dcache();
+};
+
 struct inode_t {
 private:
     pthread_mutex_t Lock;
-    std::map<std::string, inode_t*> child;
 public:
     struct stat st;
+    struct inode_t* parent;
     json_object *blocklist = nullptr;
-    fcache* cache = nullptr;
+    fcache* file = nullptr;
+    dcache* dir = nullptr;
 #define SYNCED         1                        //是否已同步
 #define DIRTY          2                        //是否已修改
 #define CHUNKED        4                        //加密文件
     uint32_t flag = 0;
     uint32_t opened = 0;
-    inode_t(inode_t *parent);
+    inode_t(inode_t* parent);
     ~inode_t();
     bool empty();
-    inode_t* add_cache(std::string path, struct stat st);
+    inode_t* add_entry(std::string path,const struct stat* st);
     bool clear_cache();
-    inode_t* getnode(const std::string& path, bool create);
-    const struct stat* getstat(const std::string& path);
+    inode_t* getnode(const std::string& path);
+//    const struct stat* getstat(const std::string& path);
     void move(const std::string& path);
     std::string getcwd();
     std::string getname();
@@ -82,9 +95,10 @@ std::string encodepath(const std::string& path);
 std::string decodepath(const std::string& path);
 bool endwith(const std::string& s1, const std::string& s2);
 
-inode_t* getnode(const char *path, bool create);
+inode_t* getnode(const char *path);
+void cache_init();
 void cache_close(inode_t* node);
-void cache_clear();
+void cache_destory();
 
 
 #endif

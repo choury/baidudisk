@@ -230,15 +230,7 @@ fcache::~fcache(){
     pthread_cond_destroy(&wait);
 }
 
-inode_t super_node(nullptr);
-
-inode_t::inode_t(inode_t *parent) {
-    child[".."] = parent;
-    memset(&st, 0, sizeof(st));
-    st.st_ctime = time(nullptr);
-    st.st_mtime = time(nullptr);
-    st.st_nlink = 1;
-    st.st_mode = S_IFDIR | 0755;
+dcache::dcache(){
     pthread_mutexattr_t mutexattr;
     pthread_mutexattr_init(&mutexattr);
     pthread_mutexattr_settype(&mutexattr,        //让它可以递归加锁
@@ -247,54 +239,82 @@ inode_t::inode_t(inode_t *parent) {
     pthread_mutexattr_destroy(&mutexattr);
 }
 
+void dcache::lock() {
+    pthread_mutex_lock(&Lock);
+}
+
+void dcache::unlock() {
+    pthread_mutex_unlock(&Lock);
+}
+
+dcache::~dcache(){
+    pthread_mutex_destroy(&Lock);
+}
+
+
+inode_t super_node(nullptr);
+
+inode_t::inode_t(inode_t *parent):parent(parent){
+    memset(&st, 0, sizeof(st));
+    pthread_mutexattr_t mutexattr;
+    pthread_mutexattr_init(&mutexattr);
+    pthread_mutexattr_settype(&mutexattr,        //让它可以递归加锁
+                              PTHREAD_MUTEX_RECURSIVE_NP);
+    pthread_mutex_init(&Lock, &mutexattr);
+    pthread_mutexattr_destroy(&mutexattr);
+}
+
 inode_t::~inode_t(){
-    assert(child.size() == 1);
+    assert(empty());
     del_job((job_func)cache_close, this);
     pthread_mutex_destroy(&Lock);
     if(blocklist){
         json_object_put(blocklist);
     }
-    delete cache;
+    delete dir;
+    delete file;
 }
 
 bool inode_t::empty(){
-    assert(child.count("..") == 1);
-    return child.size() == 1;
+    if(dir){
+        assert(file == nullptr);
+        return dir->entry.empty();
+    }
+    return file == nullptr;
 }
 
-inode_t* inode_t::add_cache(string path, struct stat st) {
-    lock();
+inode_t* inode_t::add_entry(string path, const struct stat* st) {
     assert(basename(path) == path);
-    if(path == "." || path == "/"){
-        this->st = st;
+    assert(path != "." && path != "/");
+    if(path == ""){
+        memcpy(&this->st, st, sizeof(struct stat));
         return this;
     }
-    if(S_ISDIR(st.st_mode) && endwith(path, ".def")){
-        baidu_getattr((getcwd()+"/"+path).c_str(), &st);
-        return this;
+    inode_t* i = new inode_t(this);
+    memcpy(&i->st, st, sizeof(struct stat));
+    if(S_ISDIR(st->st_mode)){
+        i->dir = new dcache;
     }
-    if(child.count(path) == 0) {
-        child[path] = new inode_t(this);
-    }
-    inode_t* i = child[path];
-    i->st = st;
-    i->lock();
-    unlock();
+    dir->lock();
+    assert(dir->entry.count(path) == 0 || dir->entry[path] == nullptr);
+    dir->entry[path] = i;
+    dir->unlock();
     return i;
 }
 
+
 bool inode_t::clear_cache(){
     lock();
-    for(auto i = child.begin(); i!= child.end();){
-        if(i->first == ".."){
-            i++;
-            continue;
-        }
-        if(i->second->cache == nullptr &&
+    if(dir == nullptr){
+        unlock();
+        return file == nullptr;
+    }
+    for(auto i = dir->entry.begin(); i!= dir->entry.end();){
+        if(i->second->file == nullptr &&
            i->second->clear_cache())
         {
             delete i->second;
-            i = child.erase(i);
+            i = dir->entry.erase(i);
         }else{
             i++;
         }
@@ -304,23 +324,21 @@ bool inode_t::clear_cache(){
     return empty();
 }
 
-inode_t* inode_t::getnode(const string& path, bool create) {
+inode_t* inode_t::getnode(const string& path) {
     if(path == "." || path == "/") {
         return this;
     } else {
         string subpath = subname(path);
         string child_name = childname(path);
-        if(child.count(child_name) == 0) {
-            if(create){
-                inode_t* i = new inode_t(this);
-                child[child_name] = i;
-            }else{
-                return nullptr;
-            }
+        assert(file == nullptr);
+        if(dir->entry.count(child_name) == 0) {
+            return nullptr;
         }
-        return child[child_name]->getnode(subpath, create);
+        return dir->entry[child_name]->getnode(subpath);
     }
 }
+
+/*
 const struct stat* inode_t::getstat(const string& path) {
     if(path == "." || path == "/") {
         if(flag & SYNCED){
@@ -331,22 +349,22 @@ const struct stat* inode_t::getstat(const string& path) {
     } else {
         string subpath = subname(path);
         string child_name = childname(path);
-        auto c = child.find(child_name);
-        if(c == child.end()) {
+        auto c = dir->child.find(child_name);
+        if(c == dir->child.end()) {
             return nullptr;
         } else {
-            return &child[child_name]->st;
+            return &dir->child[child_name]->st;
         }
     }
 }
+*/
 
 string inode_t::getname(){
-    assert(child.count(".."));
-    inode_t* p = child[".."];
+    inode_t* p = parent;
     if(p == nullptr){
         return "";
     }
-    for(auto i:p->child){
+    for(auto i:p->dir->entry){
         if(i.second == this){
             return i.first;
         }
@@ -363,7 +381,7 @@ string inode_t::getcwd(){
         path = encodepath(path);
     }
     inode_t* p = this;
-    while((p = p->child[".."])){
+    while((p = p->parent)){
         path = p->getname() +"/"+ path;
     }
     unlock();
@@ -371,24 +389,30 @@ string inode_t::getcwd(){
 }
 
 void inode_t::filldir(void *buff, fuse_fill_dir_t filler){
-    assert(cache == nullptr);
+    assert(file == nullptr);
     filler(buff, ".", &st, 0);
-    for (auto i : child) {
-        if(i.second == nullptr){
-            assert(i.first == "..");
-            assert(this == &super_node);
-            filler(buff, "..", nullptr, 0);
-        }else{
+    if(parent == nullptr){
+        assert(this == &super_node);
+        filler(buff, "..", nullptr, 0);
+    }else{
+        filler(buff, "..", &parent->st, 0);
+    }
+    dir->lock();
+    for (auto i : dir->entry) {
+        if(i.second){
             filler(buff, i.first.c_str(), &i.second->st, 0);
+        }else{
+            filler(buff, i.first.c_str(), nullptr, 0);
         }
-    } 
+    }
+    dir->unlock();
 }
 
 void inode_t::remove(){
     lock();
-    inode_t* p = child[".."];
-    p->child.erase(getname());
-    if(cache == nullptr){
+    inode_t* p = parent;
+    p->dir->entry.erase(getname());
+    if(file == nullptr){
         assert(empty()); //only ".."
         delete this;
         return;
@@ -406,7 +430,7 @@ void inode_t::remove(){
 
 void inode_t::release(){
     lock();
-    assert(cache);
+    assert(file);
     filesync(this, 1);
     opened--;
     if(opened == 0){
@@ -422,12 +446,11 @@ void inode_t::release(){
 }
 
 void inode_t::move(const string& path){
-    inode_t* p = super_node.getnode(dirname(path), true);
+    inode_t* p = super_node.getnode(dirname(path));
     lock();
-    assert(child.count(".."));
-    child[".."]->child.erase(getname());
-    p->child[basename(path)] = this;
-    child[".."] = p;
+    parent->dir->entry.erase(getname());
+    p->dir->entry[basename(path)] = this;
+    parent = p;
     unlock();
 }
 
@@ -439,9 +462,9 @@ int inode_t::unlock(){
     return pthread_mutex_unlock(&Lock);
 }
 
-inode_t* getnode(const char *path, bool create){
+inode_t* getnode(const char *path){
     super_node.lock();
-    inode_t* node = super_node.getnode(path, create);
+    inode_t* node = super_node.getnode(path);
     if(node){
         node->lock();
     }
@@ -449,20 +472,26 @@ inode_t* getnode(const char *path, bool create){
     return node;
 }
 
+void cache_init(){
+    super_node.lock();
+    super_node.dir = new dcache;
+    super_node.unlock();
+}
+
 void cache_close(inode_t* node){
     node->lock();
     if(node->opened == 0){
         assert(node->flag & SYNCED );
-        assert(node->cache);
-        delete node->cache;
-        node->cache = nullptr;
+        assert(node->file);
+        delete node->file;
+        node->file = nullptr;
     }
     del_job((job_func)cache_close, node);
     node->unlock();
     return;
 }
 
-void cache_clear() {
+void cache_destory() {
     super_node.lock();
     super_node.clear_cache();
     super_node.unlock();

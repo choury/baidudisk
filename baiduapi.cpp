@@ -91,6 +91,10 @@ static int handleerror(const char *msg)
         errno = EBADF;
         break;
 
+    case 31064:
+        errno = EACCES;
+        break;
+
     case 31066:
         errno = ENOENT;
         break;
@@ -173,17 +177,17 @@ typedef struct {
     size_t  bno;
     blksize_t blksize;
     char path[PATHLEN];
-} block;
+} task_param;
 
 
 //从服务器读一个block
-void readblock(block *tb) {
-    block b = *tb;
-    free(tb);
-    size_t startp = b.bno * b.blksize;
+void readblock(task_param *tp) {
+    task_param param = *tp;
+    free(tp);
+    size_t startp = param.bno * param.blksize;
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, b.path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, param.path);
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=download&"
@@ -201,15 +205,15 @@ void readblock(block *tb) {
         
         r->method = Httprequest::get;
         
-        buf = (char *)malloc(b.blksize);
-        buffstruct bs = {0, (size_t)b.blksize, buf};
+        buf = (char *)malloc(param.blksize);
+        buffstruct bs = {0, (size_t)param.blksize, buf};
         r->writefunc = savetobuff;
         r->writeprame = &bs;
-        r->timeout = b.blksize/(10*1024);
+        r->timeout = param.blksize/(10*1024);
         
         char range[100] = {0};
-        if((b.node->flag & CHUNKED) == 0){
-            snprintf(range, sizeof(range) - 1, "%lu-%lu", startp, startp + b.blksize - 1);
+        if((param.node->flag & CHUNKED) == 0){
+            snprintf(range, sizeof(range) - 1, "%lu-%lu", startp, startp + param.blksize - 1);
             r->range = range;
         }
         
@@ -224,38 +228,38 @@ void readblock(block *tb) {
             errorlog("network error:%d\n", ret);
             break;
         }
-        assert(bs.offset <= (size_t)b.blksize);
+        assert(bs.offset <= (size_t)param.blksize);
         assert(bs.buf == buf);
 /*
         if(b.node->flag & CHUNKED)
             xorcode(bs.buf, startp, bs.offset, ak);
 */
         
-        b.node->cache->lock();
-        pwrite(b.node->cache->fd, bs.buf, bs.offset, startp);
-        b.node->cache->chunks[b.bno].flag |= BL_SYNCED;
-        b.node->cache->unlock();
+        param.node->file->lock();
+        pwrite(param.node->file->fd, bs.buf, bs.offset, startp);
+        param.node->file->chunks[param.bno].flag |= BL_SYNCED;
+        param.node->file->unlock();
     }while(0);
     free(buf);
-    b.node->cache->lock();
-    b.node->cache->taskid.erase(b.bno);
-    b.node->cache->unlock();
+    param.node->file->lock();
+    param.node->file->taskid.erase(param.bno);
+    param.node->file->unlock();
 }
 
 //上传一个block作为chunkfile
-void uploadblock(block *tb) {
-    block b = *tb;
-    free(tb);
+void uploadblock(task_param *tp) {
+    task_param param = *tp;
+    free(tp);
     char buff[1024];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, b.path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, param.path);
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=upload&"
              "access_token=%s&"
              "path=%s/%zu&"
              "ondup=newcopy"
-             , Access_Token, URLEncode(fullpath).c_str(), b.bno);
+             , Access_Token, URLEncode(fullpath).c_str(), param.bno);
 
     char *buf = nullptr;
     do{
@@ -266,18 +270,18 @@ void uploadblock(block *tb) {
             break;
         }
 
-        buf = (char *)malloc(b.blksize);
-        buffstruct read_bs = {0, (size_t)b.blksize, buf};
-        b.node->cache->lock();
-        if((b.node->cache->chunks.count(b.bno)) == 0){ //it was truncated
-            b.node->cache->unlock();
+        buf = (char *)malloc(param.blksize);
+        buffstruct read_bs = {0, (size_t)param.blksize, buf};
+        param.node->file->lock();
+        if((param.node->file->chunks.count(param.bno)) == 0){ //it was truncated
+            param.node->file->unlock();
             break;
         }
-        assert(b.node->cache->chunks[b.bno].flag & BL_DIRTY);
-        assert((b.node->cache->chunks[b.bno].flag & BL_TRANS) == 0);
-        b.node->cache->chunks[b.bno].flag |= BL_TRANS;
-        read_bs.len = pread(b.node->cache->fd, read_bs.buf, read_bs.len, b.bno*b.blksize);
-        b.node->cache->unlock();
+        assert(param.node->file->chunks[param.bno].flag & BL_DIRTY);
+        assert((param.node->file->chunks[param.bno].flag & BL_TRANS) == 0);
+        param.node->file->chunks[param.bno].flag |= BL_TRANS;
+        read_bs.len = pread(param.node->file->fd, read_bs.buf, read_bs.len, param.bno*param.blksize);
+        param.node->file->unlock();
 
 /*
         if(b.node->flag & ENCRYPT)
@@ -292,7 +296,7 @@ void uploadblock(block *tb) {
         buffstruct write_bs ={0, 0, 0};
         r->writefunc = savetobuff;
         r->writeprame = &write_bs;
-        r->timeout = b.blksize/(10*1024);
+        r->timeout = param.blksize/(10*1024);
 
         int ret = request(r);
         Httpdestroy(r);
@@ -318,20 +322,111 @@ void uploadblock(block *tb) {
 
         json_object *jpath;
         if (json_object_object_get_ex(json_get, "path",&jpath)) {
-            b.node->cache->synced(b.bno, json_object_get_string(jpath)+strlen(fullpath)+1);
+            param.node->file->synced(param.bno, json_object_get_string(jpath)+strlen(fullpath)+1);
             json_object_put(json_get);
         } else {
             errorlog("Did not get path:%s\n", json_object_to_json_string(json_get));
         }
     }while(0);
     free(buf);
-    b.node->cache->lock();
-    b.node->cache->taskid.erase(b.bno);
-    b.node->cache->chunks[b.bno].flag &= ~BL_REOPEN;
-    b.node->cache->chunks[b.bno].flag &= ~BL_TRANS;
-    b.node->cache->unlock();
+    param.node->file->lock();
+    param.node->file->taskid.erase(param.bno);
+    param.node->file->chunks[param.bno].flag &= ~BL_REOPEN;
+    param.node->file->chunks[param.bno].flag &= ~BL_TRANS;
+    param.node->file->unlock();
 }
 
+int readchunkattr(task_param *tp) {
+    task_param param = *tp;
+    free(tp);
+    assert(endwith(param.path, ".def") == 0);
+    std::string realpath = encodepath(param.path);
+    std::string bname = basename(param.path);
+    char buff[2048];
+    char fullpath[PATHLEN];
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s/meta.json", basepath, realpath.c_str());
+    snprintf(buff, sizeof(buff) - 1,
+             "https://pcs.baidu.com/rest/2.0/pcs/file?"
+             "method=download&"
+             "access_token=%s&"
+             "path=%s",
+             Access_Token, URLEncode(fullpath).c_str());
+
+    int ret = 0;
+    do{
+        Http *r = Httpinit(buff);
+        if (r == NULL) {
+            ret = -errno;
+            errorlog("can't resolve domain:%s\n", strerror(errno));
+            break;
+        }
+        r->method = Httprequest::get;
+        buffstruct bs = {0, 0, 0};
+        r->writefunc = savetobuff;
+        r->writeprame = &bs;
+        
+        
+        ret = request(r);
+        Httpdestroy(r);
+        if(ret > CURL_LAST){
+            ret = handleerror(bs.buf);
+            free(bs.buf);
+            break;
+        }
+        if (ret != CURLE_OK) {
+            errorlog("network error:%d\n", ret);
+            free(bs.buf);
+            ret = -EPROTO;
+            break;
+        }
+        
+        json_object *json_get = json_tokener_parse(bs.buf);
+        free(bs.buf);
+        
+        if (json_get == NULL) {
+            errorlog("json_tokener_parse filed!\n");
+            ret = -EPROTO;
+            break;
+        }
+        
+        assert(param.node->dir->entry.count(bname));
+        assert(param.node->dir->entry[bname] == nullptr);
+        struct stat st;
+        memset(&st, 0, sizeof(struct stat));
+        st.st_nlink = 1;
+        json_object *jmtime;
+        json_object_object_get_ex(json_get, "mtime",&jmtime);
+        st.st_mtime = json_object_get_int64(jmtime);
+        
+        json_object *jctime;
+        json_object_object_get_ex(json_get, "ctime",&jctime);
+        st.st_ctime = json_object_get_int64(jctime);
+        
+        json_object *jsize;
+        json_object_object_get_ex(json_get, "size",&jsize);
+        st.st_size = json_object_get_int64(jsize);
+        
+        json_object *jblksize;
+        json_object_object_get_ex(json_get, "blksize",&jblksize);
+        st.st_blksize = json_object_get_int64(jblksize);
+        assert(st.st_blksize % 4096 == 0);
+        
+        json_object *jblock_list;
+        json_object_object_get_ex(json_get, "block_list",&jblock_list);
+        
+        st.st_mode = S_IFREG | 0666;
+        
+        inode_t* node = param.node->add_entry(bname, &st);
+        node->blocklist = json_object_get(jblock_list);
+        node->flag |= CHUNKED;
+        json_object_put(json_get);
+    }while(0);
+    param.node->dir->lock();
+    assert(param.node->dir->taskid.count(bname));
+    param.node->dir->taskid.erase(bname);
+    param.node->dir->unlock();
+    return ret;
+}
 
 /*获得Access_Token
  * 我曾经把自己模拟成浏览器手动post用户名密码，开始挺好使的
@@ -482,151 +577,54 @@ void *baidu_init(struct fuse_conn_info *conn) {
     mkdir(basedir,S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
     addtask((taskfunc)job_handle, nullptr, 0);
     conn->want = conn->capable & FUSE_CAP_BIG_WRITES;
-    signal(SIGUSR1, (sighandler_t)cache_clear);
+    cache_init();
+    signal(SIGUSR1, (sighandler_t)cache_destory);
     return NULL;
 }
 
 void baidu_destroy(void *){
-    cache_clear();
+    cache_destory();
 }
 
 //获得文件属性……
 int baidu_getattr(const char *path, struct stat *st) {
-    char buff[2048];
-    char fullpath[PATHLEN];
-    memset(st, 0, sizeof(struct stat));
-    st->st_nlink = 1;
-    bool chunked = endwith(path, ".def");
-    std::string realpath = path;
-    if(chunked){
-        realpath = decodepath(path);
-    }
-    inode_t* node = getnode(dirname(realpath).c_str(), false);
-    const struct stat *st_get = node->getstat(basename(realpath));
-    if(st_get == nullptr && (node->flag & SYNCED)){
-        node->unlock();
-        return -ENOENT;
-    }
-    node->unlock();
-    if(st_get){
-        memcpy(st, st_get, sizeof(struct stat));
+    if(strcmp(path, "/") == 0){
+        st->st_nlink = 1;
+        st->st_mode = S_IFDIR | 0755;
         return 0;
     }
-
-    if(chunked){
-        snprintf(fullpath, sizeof(fullpath) - 1, "%s%s/meta.json", basepath, path);
-        snprintf(buff, sizeof(buff) - 1,
-             "https://pcs.baidu.com/rest/2.0/pcs/file?"
-             "method=download&"
-             "access_token=%s&"
-             "path=%s",
-             Access_Token, URLEncode(fullpath).c_str());
-    }else{
-        snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
-        snprintf(buff, sizeof(buff) - 1,
-             "https://pcs.baidu.com/rest/2.0/pcs/file?"
-             "method=meta&"
-             "access_token=%s&"
-             "path=%s",
-             Access_Token, URLEncode(fullpath).c_str());
-    }
-
-    Http *r = Httpinit(buff);
-    if (r == NULL) {
-        int lasterrno = errno;
-        errorlog("can't resolve domain:%s\n", strerror(errno));
-        return -lasterrno;
-    }
-    r->method = Httprequest::get;
-    buffstruct bs = {0, 0, 0};
-    r->writefunc = savetobuff;
-    r->writeprame = &bs;
-
-
-    int ret = request(r);
-    Httpdestroy(r);
-    if (ret > CURL_LAST) {
-        ret = handleerror(bs.buf);
-        free(bs.buf);
-        if((ret == -ENOENT || ret == -EINVAL ) && !chunked){
-            return baidu_getattr(encodepath(path).c_str(), st);
-        }
+    struct fuse_file_info fi;
+    int ret = baidu_opendir(dirname(path).c_str(), &fi);
+    if(ret){
         return ret;
     }
-
-    if (ret != CURLE_OK) {
-        errorlog("network error:%d\n", ret);
-        free(bs.buf);
-        return -EPROTO;
+    std::string bname = basename(path);
+    inode_t* node = getnode(dirname(path).c_str());
+    assert(node->flag & SYNCED);
+    node->dir->lock();
+    node->unlock();
+    if(node->dir->taskid.count(bname)){
+        task_t taskid = node->dir->taskid[bname];
+        node->dir->unlock();
+        waittask(taskid);
+        node->dir->lock();
     }
-    json_object *json_get = json_tokener_parse(bs.buf);
-    free(bs.buf);
-
-    if (json_get == NULL) {
-        errorlog("json_tokener_parse filed!\n");
-        return -EPROTO;
-    }
-
-    if(chunked){
-        json_object *jmtime;
-        json_object_object_get_ex(json_get, "mtime",&jmtime);
-        st->st_mtime = json_object_get_int64(jmtime);
-
-        json_object *jctime;
-        json_object_object_get_ex(json_get, "ctime",&jctime);
-        st->st_ctime = json_object_get_int64(jctime);
-
-        json_object *jsize;
-        json_object_object_get_ex(json_get, "size",&jsize);
-        st->st_size = json_object_get_int64(jsize);
-
-        json_object *jblksize;
-        json_object_object_get_ex(json_get, "blksize",&jblksize);
-        st->st_blksize = json_object_get_int64(jblksize);
-        assert(st->st_blksize % 4096 == 0);
-        
-        json_object *jblock_list;
-        json_object_object_get_ex(json_get, "block_list",&jblock_list);
-        
-        st->st_mode = S_IFREG | 0666;
-        inode_t* i = node->add_cache(basename(realpath), *st);
-        
-        i->blocklist = json_object_get(jblock_list);
-        i->flag |= CHUNKED;
-        i->unlock();
-    }else{
-        json_object *jlist;
-        json_object_object_get_ex(json_get, "list",&jlist);
-        json_object *filenode = json_object_array_get_idx(jlist, 0);
-
-        json_object *jmtime;
-        json_object_object_get_ex(filenode, "mtime",&jmtime);
-        st->st_mtime = json_object_get_int64(jmtime);
-
-        json_object *jctime;
-        json_object_object_get_ex(filenode, "ctime",&jctime);
-        st->st_ctime = json_object_get_int64(jctime);
-
-        json_object *jfs_id;
-        json_object_object_get_ex(filenode, "fs_id",&jfs_id);
-        st->st_ino = json_object_get_int64(jfs_id);
-
-        json_object *jsize;
-        json_object_object_get_ex(filenode, "size",&jsize);
-        st->st_size = json_object_get_int64(jsize);
-        st->st_blksize = BLOCKLEN;
-
-        json_object *jisdir;
-        json_object_object_get_ex(filenode, "isdir",&jisdir);
-        if (json_object_get_boolean(jisdir)) {
-            st->st_mode = S_IFDIR | 0755;                        //文件：只读，想要写，对不起，先拷贝一份下来，然后覆盖
-        } else {
-            st->st_mode = S_IFREG | 0444;
+    if(node->dir->entry.count(bname)){
+        if(node->dir->entry[bname] == nullptr){
+            task_param *b = (task_param *)malloc(sizeof(task_param));
+            b->node =  node;
+            strcpy(b->path, path);
+            node->dir->taskid[bname] = addtask((taskfunc)readchunkattr, b, 0);
+            node->dir->unlock();
+            return -EBUSY;
         }
-        node->add_cache(basename(realpath), *st)->unlock();
+        *st = node->dir->entry[bname]->st;
+        node->dir->unlock();
+        return 0;
+    }else{
+        node->dir->unlock();
+        return -ENOENT;
     }
-    json_object_put(json_get);
-    return 0;
 }
 
 int baidu_fgetattr(const char* path, struct stat* st, struct fuse_file_info* fi){
@@ -637,26 +635,19 @@ int baidu_fgetattr(const char* path, struct stat* st, struct fuse_file_info* fi)
     return 0;
 }
 
-//读取目录下面有什么文件
-int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
-{
-    (void) offset;
-    inode_t* node = getnode(path, true);
-    assert(node->cache == nullptr);
+int baidu_opendir(const char *path, struct fuse_file_info *fi){
+    inode_t* node = getnode(path);
+    assert(node->file == nullptr);
+    fi->fh = (uint64_t)node;
     if(node->flag & SYNCED){
-        node->filldir(buf, filler);
         node->unlock();
         return 0;
     }
     node->unlock();
-
+    assert(node->dir);
     char buff[2048];
     char fullpath[PATHLEN];
-    int pathlen = sprintf(fullpath, "%s%s", basepath, path);
-    if (fullpath[pathlen - 1] != '/') {         //如果路径不是以‘/’结尾的，加一个‘/’
-        fullpath[pathlen] = '/';
-        fullpath[++pathlen] = '\0';
-    };
+    sprintf(fullpath, "%s%s/", basepath, path);
 
     struct stat st;
     memset(&st, 0, sizeof(struct stat));
@@ -698,6 +689,7 @@ int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t off
     json_object_object_get_ex(json_get, "list",&jlist);
     
     node->lock();
+    node->dir->lock();
     for (int i = 0; i < json_object_array_length(jlist); ++i) {
         json_object *filenode = json_object_array_get_idx(jlist, i);
         
@@ -728,14 +720,51 @@ int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t off
         
         json_object *jpath;
         json_object_object_get_ex(filenode, "path",&jpath);
-        const char *childname = json_object_get_string(jpath) + pathlen;
-        node->add_cache(childname, st)->unlock();
+        const char *bpath = json_object_get_string(jpath) + strlen(basepath);
+        if(endwith(bpath, ".def")){
+            std::string realpath = decodepath(bpath);
+            node->dir->entry[basename(realpath)] = nullptr;
+            task_param *b = (task_param *)malloc(sizeof(task_param));
+            b->node =  node;
+            strcpy(b->path, realpath.c_str());
+            node->dir->taskid[basename(realpath)] = addtask((taskfunc)readchunkattr, b, 0);
+        }else{
+            node->add_entry(basename(bpath), &st);
+        }
     }
-    node->flag |= SYNCED;
-    node->filldir(buf, filler);
-    node->unlock();
-
     json_object_put(json_get);
+    node->dir->unlock();
+    node->flag |= SYNCED;
+    node->flag |= DIRTY;
+    node->unlock();
+    return 0;
+}
+
+//读取目录下面有什么文件
+int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
+{
+    (void) offset;
+    inode_t* node = (inode_t *)fi->fh;
+    node->lock();
+    assert(node->file == nullptr);
+    node->dir->lock();
+    while(!node->dir->taskid.empty()){
+        task_t taskid = node->dir->taskid.begin()->second;
+        node->dir->unlock(); 
+        waittask(taskid);
+        node->dir->lock();
+    }
+    for(auto i:node->dir->entry){
+        if(i.second == nullptr){
+            task_param *b = (task_param *)malloc(sizeof(task_param));
+            b->node =  node;
+            sprintf(b->path, "%s/%s", path, i.first.c_str());
+            node->dir->taskid[i.first] = addtask((taskfunc)readchunkattr, b, 0);
+        }
+    }
+    node->filldir(buf, filler);
+    node->dir->unlock();
+    node->unlock();
     return 0;
 }
 
@@ -828,7 +857,6 @@ int baidu_mkdir(const char *path, mode_t mode) {
         return -EPROTO;
     }
 
-    inode_t *node = getnode(dirname(path).c_str(), false);
     struct stat st;
     memset(&st, 0, sizeof(st));
     st.st_nlink = 1;
@@ -846,7 +874,9 @@ int baidu_mkdir(const char *path, mode_t mode) {
     
     st.st_mode = S_IFDIR | 0755;
     json_object_put(json_get);
-    node->add_cache(basename(path), st)->unlock();
+    
+    inode_t *node = getnode(dirname(path).c_str());
+    node->add_entry(basename(path), &st);
     node->unlock();
     return 0;
 }
@@ -854,7 +884,7 @@ int baidu_mkdir(const char *path, mode_t mode) {
 
 //删除文件（文件夹需使用rmdir）
 int baidu_unlink(const char *path) {
-    inode_t* node = getnode(path, false);
+    inode_t* node = getnode(path);
     if(node == nullptr){
         return -ENOENT;
     }
@@ -893,10 +923,10 @@ int baidu_unlink(const char *path) {
 
 //删除文件夹
 int baidu_rmdir(const char *path) {
-    inode_t* node = getnode(path, false);
+    inode_t* node = getnode(path);
     if(node){
         if(node->flag & SYNCED){
-            assert(node->cache == nullptr);
+            assert(node->file == nullptr);
             if(!node->empty()){
                 node->unlock();
                 return -ENOTEMPTY;
@@ -955,7 +985,7 @@ int baidu_rmdir(const char *path) {
 /* 想猜你就继续猜吧
  */
 int baidu_rename(const char *oldname, const char *newname) {
-    inode_t *node = getnode(oldname, false);
+    inode_t *node = getnode(oldname);
     if(node == nullptr){
         return -ENOENT;
     }
@@ -1002,22 +1032,25 @@ int baidu_rename(const char *oldname, const char *newname) {
 //创建一个文件，并把它加到filelist里面
 int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     (void) mode;
-    inode_t *node = getnode(path, true);
-    assert(node->cache == nullptr);
-    assert(node->opened == 0);
+    inode_t *node = getnode(dirname(path).c_str());
+    assert(node->file == nullptr);
     
-    node->cache = new fcache();
-    node->opened = 1;
-    node->flag |= CHUNKED;
-    node->flag |= DIRTY;
+    struct stat st;
+    memset(&st, 0, sizeof(struct stat));
+    st.st_ino  = 1;
+    st.st_nlink = 1;
+    st.st_size = 0;
+    st.st_blksize = BLOCKLEN;
+    st.st_mode = S_IFREG | 0666;
+    st.st_ctime = time(NULL);
+    st.st_mtime = time(NULL);
     
-    node->st.st_ino  = 1;
-    node->st.st_nlink = 1;
-    node->st.st_size = 0;
-    node->st.st_blksize = BLOCKLEN;
-    node->st.st_mode = S_IFREG | 0666;
-    node->st.st_ctime = time(NULL);
-    node->st.st_mtime = time(NULL);
+    inode_t *i = node->add_entry(basename(path), &st);
+    
+    i->file = new fcache();
+    i->opened = 1;
+    i->flag |= CHUNKED;
+    i->flag |= DIRTY;
 
     fi->fh = (uint64_t) node;
     node->unlock();
@@ -1032,14 +1065,14 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
  * 否则，返回文件不存在
  */
 int baidu_open(const char *path, struct fuse_file_info *fi) {
-    inode_t* node = getnode(path, false);
+    inode_t* node = getnode(path);
     if((node->flag & CHUNKED) == 0 &&
        (fi->flags & O_ACCMODE) != O_RDONLY)
     {
         node->unlock();
         return -EACCES;
     }
-    if(node->cache){
+    if(node->file){
         node->opened++;
         fi->fh = (uint64_t)node;
         node->unlock();
@@ -1047,13 +1080,13 @@ int baidu_open(const char *path, struct fuse_file_info *fi) {
     }
     assert(node->opened == 0);
 
-    node->cache = new fcache();
+    node->file = new fcache();
     assert(((node->flag & CHUNKED) && node->blocklist) ||
            ((node->flag & CHUNKED) == 0 && node->blocklist == nullptr));
     if(node->blocklist){
         for (int i = 0; i < json_object_array_length(node->blocklist); ++i) {
             json_object *block = json_object_array_get_idx(node->blocklist, i);
-            node->cache->chunks[i].name = json_object_get_string(block);
+            node->file->chunks[i].name = json_object_get_string(block);
         }
 
     }
@@ -1079,7 +1112,7 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
 {
     inode_t *node = (inode_t *) fi->fh;
     node->lock();
-    assert(node->cache);
+    assert(node->file);
     if (offset > node->st.st_size) {        //如果偏移超过文件长度
         node->unlock();
         errno = EFAULT;
@@ -1096,42 +1129,42 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
     blksize_t blksize = node->st.st_blksize;
     int c = offset / blksize;  //计算一下在哪个块
     size_t p = c;
-    node->cache->lock();
+    node->file->lock();
     do{             //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
         if(p > GetBlkNo(node->st.st_size, node->st.st_blksize)){
             break;
         }
-        if (node->cache->taskid.count(p) == 0 &&
-            (node->cache->chunks[p].flag & BL_SYNCED) == 0)
+        if (node->file->taskid.count(p) == 0 &&
+            (node->file->chunks[p].flag & BL_SYNCED) == 0)
         {
-            block *b = (block *) malloc(sizeof(block));
+            task_param *b = (task_param *) malloc(sizeof(task_param));
             b->node = node;
             b->bno = p;
             b->blksize = node->st.st_blksize;
             if(node->flag & CHUNKED){
-                sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->cache->chunks[p].name.c_str());
+                sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->file->chunks[p].name.c_str());
             }else{
                 strcpy(b->path, node->getcwd().c_str());
             }
-            node->cache->taskid[p] = addtask((taskfunc) readblock, b, 0);
+            node->file->taskid[p] = addtask((taskfunc) readblock, b, 0);
             node->flag &= ~SYNCED;
         }
         p++;
-    }while (node->cache->taskid.size() < CACHEC);
+    }while (node->file->taskid.size() < CACHEC);
     node->unlock();
-    if(node->cache->taskid.count(c)){
-        task_t taskid = node->cache->taskid[c];
-        node->cache->unlock();
+    if(node->file->taskid.count(c)){
+        task_t taskid = node->file->taskid[c];
+        node->file->unlock();
         waittask(taskid);
-        node->cache->lock();
+        node->file->lock();
     }
-    if ((node->cache->chunks[c].flag & BL_SYNCED) ==0 ) {
-        node->cache->unlock();
-        return baidu_read(path, buf, size, offset, fi);  //如果在这里返回那么读取出错,重试
+    if ((node->file->chunks[c].flag & BL_SYNCED) ==0 ) {
+        node->file->unlock();
+        return -EBUSY;              //如果在这里返回那么读取出错,重试
     }
     size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能读取的字节
-    ssize_t ret = pread(node->cache->fd, buf, len, offset);
-    node->cache->unlock();
+    ssize_t ret = pread(node->file->fd, buf, len, offset);
+    node->file->unlock();
     if (ret != (ssize_t)len) {                   //读取出错了
         return ret;
     }
@@ -1230,7 +1263,7 @@ int baidu_uploadfile(const char *path, inode_t* node) {
 #endif
 
 int trim(inode_t *node){
-    assert(node->cache);
+    assert(node->file);
     char buff[2048];
     std::string fullpath = std::string(basepath) + node->getcwd();
     snprintf(buff, sizeof(buff) - 1,
@@ -1241,18 +1274,18 @@ int trim(inode_t *node){
     json_object *jobj = json_object_new_object();
     json_object *jarray = json_object_new_array();
 
-    node->cache->lock();
-    if(node->cache->droped.empty()){
-        node->cache->unlock();
+    node->file->lock();
+    if(node->file->droped.empty()){
+        node->file->unlock();
         return 0;
     }
-    for(auto i: node->cache->droped) {
+    for(auto i: node->file->droped) {
         json_object *jpath = json_object_new_object();
         json_object_object_add(jpath, "path", json_object_new_string((fullpath+"/"+i).c_str()));
         json_object_array_add(jarray, jpath);
     }
-    node->cache->droped.clear();
-    node->cache->unlock();
+    node->file->droped.clear();
+    node->file->unlock();
     json_object_object_add(jobj, "list", jarray);
     param += json_object_to_json_string(jobj);
     json_object_put(jobj);
@@ -1307,7 +1340,7 @@ int baidu_uploadmeta(inode_t *node) {
     json_object_object_add(jobj, "encoding", json_object_new_string("none"));
     node->blocklist = json_object_new_array();
     for (size_t i = 0; i <= GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-         json_object_array_add(node->blocklist, json_object_new_string(node->cache->chunks[i].name.c_str()));
+         json_object_array_add(node->blocklist, json_object_new_string(node->file->chunks[i].name.c_str()));
     }
     json_object_object_add(jobj, "block_list", json_object_get(node->blocklist));
     const char *jstring = json_object_to_json_string(jobj);
@@ -1347,42 +1380,42 @@ int baidu_uploadmeta(inode_t *node) {
  */
 int filesync(inode_t *node, int sync_meta){
     node->lock();
-    if(node->flag & SYNCED ||node->cache == nullptr || node->st.st_nlink == 0){
+    if(node->flag & SYNCED ||node->file == nullptr || node->st.st_nlink == 0){
         node->unlock();
         node->flag |= SYNCED;
         return 0;
     }
-    node->cache->lock();
-    while(node->cache->taskid.size()){
-        task_t taskid = node->cache->taskid.begin()->second;
-        node->cache->unlock();
+    node->file->lock();
+    while(node->file->taskid.size()){
+        task_t taskid = node->file->taskid.begin()->second;
+        node->file->unlock();
         waittask(taskid);
-        node->cache->lock();
+        node->file->lock();
     }
     if((node->flag & CHUNKED)){
         while(node->flag & DIRTY){
             node->flag &= ~DIRTY;
             std::set<task_t> waitset;
             for (size_t i = 0; i <= GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-                if (node->cache->taskid.count(i)) {
-                    waitset.insert(node->cache->taskid[i]);
-                }else if (node->st.st_nlink && (node->cache->chunks[i].flag & BL_DIRTY)) {
-                    block *b = (block *)malloc(sizeof(block));
+                if (node->file->taskid.count(i)) {
+                    waitset.insert(node->file->taskid[i]);
+                }else if (node->st.st_nlink && (node->file->chunks[i].flag & BL_DIRTY)) {
+                    task_param *b = (task_param *)malloc(sizeof(task_param));
                     b->node =  node;
                     b->bno = i;
                     b->blksize = node->st.st_blksize;
                     strcpy(b->path, node->getcwd().c_str());
                     task_t taskid = addtask((taskfunc) uploadblock, b, 0);
-                    node->cache->taskid[i] = taskid;
+                    node->file->taskid[i] = taskid;
                     waitset.insert(taskid);
                     node->flag |= DIRTY;
                 }
             }
-            node->cache->unlock();
+            node->file->unlock();
             for(auto i:waitset){
                 waittask(i);
             }
-            node->cache->lock();
+            node->file->lock();
         }
         if(sync_meta && (node->flag & SYNCED) == 0){
             while (baidu_uploadmeta(node));
@@ -1391,7 +1424,7 @@ int filesync(inode_t *node, int sync_meta){
     }else{
         node->flag |= SYNCED;
     }
-    node->cache->unlock();
+    node->file->unlock();
     node->unlock();
     return 0;
 }
@@ -1416,7 +1449,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
     blksize_t blksize = node->st.st_blksize;
     int c = offset / blksize;   //计算一下在哪个块
     int len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能写入的字节
-    if(node->cache == nullptr || (node->flag & CHUNKED) == 0){
+    if(node->file == nullptr || (node->flag & CHUNKED) == 0){
         node->unlock();
         errno = EPERM;
         return errno;
@@ -1424,53 +1457,53 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
     if(offset > node->st.st_size) {
         baidu_ftruncate(path, offset, fi);
     }
-    node->cache->lock();
+    node->file->lock();
     task_t taskid = 0;
     node->unlock();
-    if (node->cache->chunks.count(c)){
-        if(node->cache->taskid.count(c) == 0 &&
-           (node->cache->chunks[c].flag & BL_SYNCED) == 0)
+    if (node->file->chunks.count(c)){
+        if(node->file->taskid.count(c) == 0 &&
+           (node->file->chunks[c].flag & BL_SYNCED) == 0)
         {
-            block *b = (block *) malloc(sizeof(block));
+            task_param *b = (task_param *) malloc(sizeof(task_param));
             b->node = node;
             b->bno = c;
             b->blksize = node->st.st_blksize;
-            sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->cache->chunks[c].name.c_str());
-            node->cache->taskid[c] = addtask((taskfunc) readblock, b, 0);
+            sprintf(b->path, "%s/%s", node->getcwd().c_str(), node->file->chunks[c].name.c_str());
+            node->file->taskid[c] = addtask((taskfunc) readblock, b, 0);
         }
-        if(node->cache->taskid.count(c)){
-            taskid = node->cache->taskid[c];
+        if(node->file->taskid.count(c)){
+            taskid = node->file->taskid[c];
         }
-        node->cache->unlock();
+        node->file->unlock();
         waittask(taskid);
-        node->cache->lock();
-        if((node->cache->chunks[c].flag & BL_SYNCED) == 0){
-            node->cache->unlock();
+        node->file->lock();
+        if((node->file->chunks[c].flag & BL_SYNCED) == 0){
+            node->file->unlock();
             return -EAGAIN;
         }
     }
-    node->cache->unlock();
-    int ret = node->cache->write(buf, len, offset, blksize);
+    node->file->unlock();
+    int ret = node->file->write(buf, len, offset, blksize);
     node->lock();
     if(ret>0 && ret + offset > node->st.st_size){
         node->st.st_size = ret + offset;
     }
     node->flag &= ~SYNCED;
     node->flag |= DIRTY;
-    node->cache->lock();
+    node->file->lock();
     for (size_t i = 0; i < GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-        if (node->cache->taskid.count(i) == 0 &&
-            (node->cache->chunks[i].flag & BL_DIRTY))              //如果这个block是脏的那么加个上传任务
+        if (node->file->taskid.count(i) == 0 &&
+            (node->file->chunks[i].flag & BL_DIRTY))              //如果这个block是脏的那么加个上传任务
         {
-            block *b = (block *)malloc(sizeof(block));
+            task_param *b = (task_param *)malloc(sizeof(task_param));
             b->node = node;
             b->bno = i;
             b->blksize = node->st.st_blksize;
             strcpy(b->path, node->getcwd().c_str());
-            node->cache->taskid[i] = addtask((taskfunc) uploadblock, b, 0);
+            node->file->taskid[i] = addtask((taskfunc) uploadblock, b, 0);
         }
     }
-    node->cache->unlock();
+    node->file->unlock();
     node->st.st_mtime= time(NULL);
     node->unlock();
     if(ret != (ssize_t)len) {                   //读取出错了
@@ -1490,25 +1523,25 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
 int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
     inode_t* node = (inode_t *) fi->fh;
     node->lock();
-    int ret = node->cache->truncate(node->st.st_size, offset, node->st.st_blksize);
+    int ret = node->file->truncate(node->st.st_size, offset, node->st.st_blksize);
     if(ret == 0){
         node->flag &= ~SYNCED;
         node->flag |= DIRTY;
         node->st.st_size = offset;
-        node->cache->lock();
+        node->file->lock();
         for (size_t i = 0; i < GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-            if (node->cache->taskid.count(i) == 0 &&
-                (node->cache->chunks[i].flag & BL_DIRTY))              //如果这个block是脏的那么加个上传任务
+            if (node->file->taskid.count(i) == 0 &&
+                (node->file->chunks[i].flag & BL_DIRTY))              //如果这个block是脏的那么加个上传任务
             {
-                block *b = (block *)malloc(sizeof(block));
+                task_param *b = (task_param *)malloc(sizeof(task_param));
                 b->node = node;
                 b->bno = i;
                 b->blksize = node->st.st_blksize;
                 strcpy(b->path, node->getcwd().c_str());
-                node->cache->taskid[i] = addtask((taskfunc) uploadblock, b, 0);
+                node->file->taskid[i] = addtask((taskfunc) uploadblock, b, 0);
             }
         }
-        node->cache->unlock();
+        node->file->unlock();
         node->st.st_mtime= time(NULL);
     }
     node->unlock();
@@ -1516,7 +1549,7 @@ int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
 }
 
 int baidu_truncate(const char* path, off_t offset) {
-    inode_t *node = getnode(path, false);
+    inode_t *node = getnode(path);
     if (node) {
         node->unlock();
         struct fuse_file_info fi;
@@ -1537,7 +1570,7 @@ int baidu_getxattr(const char *path, const char *name, char *value, size_t len){
     if(len < sizeof(char)){
         return -ERANGE;
     }
-    inode_t *node = getnode(path, false);
+    inode_t *node = getnode(path);
     if(node->flag & CHUNKED){
         value[0]='1';
     }else{
@@ -1552,4 +1585,5 @@ int baidu_stub(const char *path)
 {
     return 0;
 }
+
 

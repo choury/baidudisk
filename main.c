@@ -16,6 +16,7 @@ struct fuse_operations baidu_oper = {
     .destroy    = baidu_destroy,
     .getattr    = baidu_getattr,
     .fgetattr   = baidu_fgetattr,
+    .opendir    = baidu_opendir,
     .readdir    = baidu_readdir,
     .mkdir      = baidu_mkdir,
     .unlink     = baidu_unlink,

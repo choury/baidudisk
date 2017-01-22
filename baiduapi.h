@@ -33,6 +33,7 @@ void *baidu_init (struct fuse_conn_info *conn);
 void baidu_destroy (void *);
 int baidu_getattr ( const char *path, struct stat *stbuf );
 int baidu_fgetattr(const char* path, struct stat* st, struct fuse_file_info* fi);
+int baidu_opendir(const char *path, struct fuse_file_info *fi);
 int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler,off_t offset, struct fuse_file_info *fi);
 int baidu_statfs(const char *path , struct statvfs * sf);
 int baidu_open(const char *path, struct fuse_file_info *fi);
