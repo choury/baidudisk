@@ -616,7 +616,7 @@ int baidu_getattr(const char *path, struct stat *st) {
             strcpy(b->path, path);
             node->dir->taskid[bname] = addtask((taskfunc)readchunkattr, b, 0);
             node->dir->unlock();
-            return -EBUSY;
+            return -EAGAIN;
         }
         *st = node->dir->entry[bname]->st;
         node->dir->unlock();
@@ -1052,7 +1052,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     i->flag |= CHUNKED;
     i->flag |= DIRTY;
 
-    fi->fh = (uint64_t) node;
+    fi->fh = (uint64_t)i;
     node->unlock();
     return 0;
 }
@@ -1160,7 +1160,7 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
     }
     if ((node->file->chunks[c].flag & BL_SYNCED) ==0 ) {
         node->file->unlock();
-        return -EBUSY;              //如果在这里返回那么读取出错,重试
+        return -EAGAIN;              //如果在这里返回那么读取出错,重试
     }
     size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能读取的字节
     ssize_t ret = pread(node->file->fd, buf, len, offset);
@@ -1460,7 +1460,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
     node->file->lock();
     task_t taskid = 0;
     node->unlock();
-    if (node->file->chunks.count(c)){
+    if (node->file->chunks.count(c) && node->st.st_size){
         if(node->file->taskid.count(c) == 0 &&
            (node->file->chunks[c].flag & BL_SYNCED) == 0)
         {
