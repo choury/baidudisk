@@ -1263,6 +1263,7 @@ int baidu_uploadfile(const char *path, inode_t* node) {
 #endif
 
 int trim(inode_t *node){
+    del_job((job_func)trim, node);
     assert(node->file);
     char buff[2048];
     std::string fullpath = std::string(basepath) + node->getcwd();
@@ -1368,7 +1369,7 @@ int baidu_uploadmeta(inode_t *node) {
     ERROR_CHECK(ret);
 
     free(bs.buf);
-    addtask((taskfunc)trim, node, 0);
+    add_job((job_func)trim, node, 0);
     return 0;
 }
 
