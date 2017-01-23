@@ -88,7 +88,7 @@ static int handleerror(const char *msg)
         break;
 
     case 31062:
-        errno = EBADF;
+        errno = EINVAL;
         break;
 
     case 31064:
@@ -723,6 +723,9 @@ int baidu_opendir(const char *path, struct fuse_file_info *fi){
         const char *bpath = json_object_get_string(jpath) + strlen(basepath);
         if(endwith(bpath, ".def")){
             std::string realpath = decodepath(bpath);
+            if(node->dir->entry.count(basename(realpath)) && node->dir->entry[basename(realpath)]){
+                continue;
+            }
             node->dir->entry[basename(realpath)] = nullptr;
             task_param *b = (task_param *)malloc(sizeof(task_param));
             b->node =  node;
@@ -876,7 +879,7 @@ int baidu_mkdir(const char *path, mode_t mode) {
     json_object_put(json_get);
     
     inode_t *node = getnode(dirname(path).c_str());
-    node->add_entry(basename(path), &st);
+    node->add_entry(basename(path), &st)->flag |= SYNCED;
     node->unlock();
     return 0;
 }
@@ -1057,6 +1060,11 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     return 0;
 }
 
+int baidu_access(const char *path, int mode)
+{
+    return 0;
+}
+
 
 /*
  * 打开一个文件，如果这个文件在缓存里面存在，直接指向它，并将计数器加一
@@ -1099,8 +1107,7 @@ int baidu_open(const char *path, struct fuse_file_info *fi) {
 /*
  * 释放一个文件
  */
-int baidu_release(const char *path, struct fuse_file_info *fi)
-{
+int baidu_release(const char *path, struct fuse_file_info *fi) {
     inode_t *node = (inode_t*) fi->fh;
     node->release();
     return 0;
@@ -1180,91 +1187,15 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
     return ret;                         //成功返回
 }
 
-#if 0
-//上传一个文件
-int baidu_uploadfile(const char *path, inode_t* node) {
-    char buff[2048];
-    char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath)-1, "%s%s", basepath, path);
-    snprintf(buff, sizeof(buff) - 1,
-             "https://c.pcs.baidu.com/rest/2.0/pcs/file?"
-             "method=upload&"
-             "access_token=%s&"
-             "path=%s&"
-             "ondup=overwrite"
-             , Access_Token, URLEncode(fullpath).c_str());
-
-    Http *r = Httpinit(buff);
-
-    if (r == NULL) {
-        int lasterrno = errno;
-        errorlog("can't resolve domain:%s\n", strerror(errno));
-        return -lasterrno;
-    }
-
-    assert(node->type == cache_type::write);
-    int file = node->wcache->fd;
-    r->method = Httprequest::post_formdata;
-    if(node->flag & CHUNKED){
-        r->readfunc = readfromfdxor;
-    }else{
-        r->readfunc = readfromfd;
-    }
-    r->readprame = (void *)(long)file;
-    r->length = lseek(file, 0, SEEK_END);
-    lseek(file, 0, SEEK_SET);
-
-    buffstruct bs = {0, 0, 0};
-    r->writefunc = savetobuff;
-    r->writeprame = &bs;
-    r->closefunc = freebuff;
-    r->closeprame = &bs;
-    r->timeout = r->length/(10*1024) + 10;
-    if ((errno = request(r)) != CURLE_OK) {
-        errorlog("network error:%d\n", errno);
-        Httpdestroy(r);
-        return -EPROTO;
-    }
-
-    json_object *json_get= json_tokener_parse(bs.buf);
-    Httpdestroy(r);
-
-    if (json_get == NULL) {
-        errorlog("json_tokener_parse filed!\n");
-        return -EPROTO;
-    }
-
-    json_object *jerror_code;
-    if (json_object_object_get_ex(json_get, "error_code",&jerror_code)) {
-        int errorno = json_object_get_int(jerror_code) ;
-        errorlog("get error:%s\n", json_object_to_json_string(json_get));
-        json_object_put(json_get);
-        return handleerror(errorno);
-    }else{
-        json_object *jmtime;
-        json_object_object_get_ex(json_get, "mtime",&jmtime);
-        node->st.st_mtime = json_object_get_int64(jmtime);
-
-        json_object *jctime;
-        json_object_object_get_ex(json_get, "ctime",&jctime);
-        node->st.st_ctime = json_object_get_int64(jctime);
-
-        json_object *jfs_id;
-        json_object_object_get_ex(json_get, "fs_id",&jfs_id);
-        node->st.st_ino = json_object_get_int64(jfs_id);
-
-        json_object *jsize;
-        json_object_object_get_ex(json_get, "size",&jsize);
-        node->st.st_size = json_object_get_int64(jsize);
-        json_object_put(json_get);
-        return 0;
-    }
-}
-#endif
 
 int trim(inode_t *node){
     del_job((job_func)trim, node);
     assert(node->file);
+    node->file->lock();
+    if(node->file->droped.empty()){
+        node->file->unlock();
+        return 0;
+    }
     char buff[2048];
     std::string fullpath = std::string(basepath) + node->getcwd();
     snprintf(buff, sizeof(buff) - 1,
@@ -1274,12 +1205,6 @@ int trim(inode_t *node){
     std::string param = "param=";
     json_object *jobj = json_object_new_object();
     json_object *jarray = json_object_new_array();
-
-    node->file->lock();
-    if(node->file->droped.empty()){
-        node->file->unlock();
-        return 0;
-    }
     for(auto i: node->file->droped) {
         json_object *jpath = json_object_new_object();
         json_object_object_add(jpath, "path", json_object_new_string((fullpath+"/"+i).c_str()));
@@ -1317,8 +1242,7 @@ int trim(inode_t *node){
     return 0;
 }
 
-//把上传的临时文件合并成一个文件
-int baidu_uploadmeta(inode_t *node) {
+int baidu_updatemeta(inode_t *node){
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s/meta.json", basepath, node->getcwd().c_str());
@@ -1330,19 +1254,12 @@ int baidu_uploadmeta(inode_t *node) {
              "ondup=overwrite"
              , Access_Token, URLEncode(fullpath).c_str());
 
-    if(node->blocklist){
-        json_object_put(node->blocklist);
-    }
     json_object *jobj = json_object_new_object();
     json_object_object_add(jobj, "size", json_object_new_int64(node->st.st_size));
     json_object_object_add(jobj, "ctime", json_object_new_int64(node->st.st_ctime));
     json_object_object_add(jobj, "mtime", json_object_new_int64(node->st.st_mtime));
     json_object_object_add(jobj, "blksize", json_object_new_int64(node->st.st_blksize));
     json_object_object_add(jobj, "encoding", json_object_new_string("none"));
-    node->blocklist = json_object_new_array();
-    for (size_t i = 0; i <= GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-         json_object_array_add(node->blocklist, json_object_new_string(node->file->chunks[i].name.c_str()));
-    }
     json_object_object_add(jobj, "block_list", json_object_get(node->blocklist));
     const char *jstring = json_object_to_json_string(jobj);
     buffstruct read_bs = {0, strlen(jstring), (char *)jstring};
@@ -1369,10 +1286,8 @@ int baidu_uploadmeta(inode_t *node) {
     ERROR_CHECK(ret);
 
     free(bs.buf);
-    add_job((job_func)trim, node, 0);
     return 0;
 }
-
 
 /*
  * 同步一个文件，如果flag被置位的话就等直到这些文件真的被同步成功
@@ -1419,7 +1334,14 @@ int filesync(inode_t *node, int sync_meta){
             node->file->lock();
         }
         if(sync_meta && (node->flag & SYNCED) == 0){
-            while (baidu_uploadmeta(node));
+            if(node->blocklist){
+                json_object_put(node->blocklist);
+            }
+            node->blocklist = json_object_new_array();
+            for (size_t i = 0; i <= GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
+                json_object_array_add(node->blocklist, json_object_new_string(node->file->chunks[i].name.c_str()));
+            }
+            while (baidu_updatemeta(node));
             node->flag |= SYNCED;
         }
     }else{
@@ -1437,7 +1359,7 @@ int baidu_fsync(const char *path, int flag, struct fuse_file_info *fi) {
 
 
 int baidu_flush(const char * path, struct fuse_file_info *fi){
-    return baidu_fsync(path, 1, fi);
+    return baidu_fsync(path, 0, fi);
 }
 /*
  * 写文件，只有本地的文件才可以写，已经传到服务器上的就不能写了
@@ -1557,8 +1479,26 @@ int baidu_truncate(const char* path, off_t offset) {
         fi.fh = (uint64_t)node;
         return baidu_ftruncate(path, offset, &fi);
     }
-    return -EACCES;
+    return -ENOENT;
 }
+
+int baidu_utimens(const char *path, const struct timespec tv[2]){
+    inode_t *node = getnode(path);
+    if(node == nullptr){
+        return -ENOENT;
+    }
+    if((node->flag & CHUNKED) == 0){
+        node->unlock();
+        return -EACCES;
+    }
+    node->st.st_atim = tv[0];
+    node->st.st_mtim = tv[1];
+    node->flag &= ~SYNCED;
+    while(baidu_updatemeta(node));
+    node->unlock();
+    return 0;
+}
+
 
 //only user.encrypt supported
 int baidu_getxattr(const char *path, const char *name, char *value, size_t len){
@@ -1582,9 +1522,5 @@ int baidu_getxattr(const char *path, const char *name, char *value, size_t len){
 }
 
 
-int baidu_stub(const char *path)
-{
-    return 0;
-}
 
 

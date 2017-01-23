@@ -440,7 +440,8 @@ void inode_t::release(){
             delete this;
             return;
         }else{
-            add_job(job_func(cache_close), this, 300);
+            add_job((job_func)trim, this, 0);
+            add_job((job_func)cache_close, this, 300);
         }
     }
     unlock();

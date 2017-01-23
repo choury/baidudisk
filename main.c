@@ -23,6 +23,7 @@ struct fuse_operations baidu_oper = {
     .rmdir      = baidu_rmdir,
     .rename     = baidu_rename,
     .statfs     = baidu_statfs,
+    .access     = baidu_access,
     .open       = baidu_open,
     .read       = baidu_read,
     .create     = baidu_create,
@@ -32,9 +33,7 @@ struct fuse_operations baidu_oper = {
     .truncate   = baidu_truncate,
     .fsync      = baidu_fsync,
     .flush      = baidu_flush,
-    .getxattr   = baidu_getxattr,
-    .access     = baidu_stub,
-    .utimens    = baidu_stub,
+    .utimens    = baidu_utimens,
 };
 
 
