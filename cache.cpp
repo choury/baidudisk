@@ -339,27 +339,6 @@ inode_t* inode_t::getnode(const string& path) {
     }
 }
 
-/*
-const struct stat* inode_t::getstat(const string& path) {
-    if(path == "." || path == "/") {
-        if(flag & SYNCED){
-            return &st;
-        }else{
-            return nullptr;
-        }
-    } else {
-        string subpath = subname(path);
-        string child_name = childname(path);
-        auto c = dir->child.find(child_name);
-        if(c == dir->child.end()) {
-            return nullptr;
-        } else {
-            return &dir->child[child_name]->st;
-        }
-    }
-}
-*/
-
 string inode_t::getname(){
     inode_t* p = parent;
     if(p == nullptr){

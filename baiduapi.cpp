@@ -1494,7 +1494,9 @@ int baidu_utimens(const char *path, const struct timespec tv[2]){
     node->st.st_atim = tv[0];
     node->st.st_mtim = tv[1];
     node->flag &= ~SYNCED;
-    while(baidu_updatemeta(node));
+    if(node->opened == 0){
+        while(baidu_updatemeta(node));
+    }
     node->unlock();
     return 0;
 }

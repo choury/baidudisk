@@ -40,6 +40,7 @@ struct fuse_operations baidu_oper = {
 int main(int argc, char *argv[]) {
     netinit();                          //初始化网络
     sprintf(confpath, "%s/.baidudisk", getenv("HOME"));
+    mkdir(confpath, 0700);
     while(gettoken());                  //取得access_token
     return fuse_main(argc, argv, &baidu_oper,NULL);
 }
