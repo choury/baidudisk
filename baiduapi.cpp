@@ -933,54 +933,54 @@ int baidu_rmdir(const char *path) {
             if(!node->empty()){
                 node->unlock();
                 return -ENOTEMPTY;
+            }else{
+                return baidu_unlink(path);
             }
         }
         node->unlock();
-    }else{
-        char buff[2048];
-        char fullpath[PATHLEN];
-        snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
+    }
+    char buff[2048];
+    char fullpath[PATHLEN];
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
 
-        snprintf(buff, sizeof(buff) - 1,
-                 "https://pcs.baidu.com/rest/2.0/pcs/file?"
-                 "method=list&"
-                 "access_token=%s&"
-                 "path=%s&limit=0-1"
-                 , Access_Token, URLEncode(fullpath).c_str());
+    snprintf(buff, sizeof(buff) - 1,
+             "https://pcs.baidu.com/rest/2.0/pcs/file?"
+             "method=list&"
+             "access_token=%s&"
+             "path=%s&limit=0-1"
+             , Access_Token, URLEncode(fullpath).c_str());
 
-        Http *r = Httpinit(buff);
-        if (r == NULL) {
-            int lasterrno = errno;
-            errorlog("can't resolve domain:%s\n", strerror(errno));
-            return -lasterrno;
-        }
-
-        r->method = Httprequest::get;
-        buffstruct bs = {0, 0, 0};
-        r->writefunc = savetobuff;
-        r->writeprame = &bs;
-
-        int ret = request(r);
-        Httpdestroy(r);
-        ERROR_CHECK(ret);
-
-        json_object *json_get = json_tokener_parse(bs.buf);
-        free(bs.buf);
-
-        if (json_get == NULL) {
-            errorlog("json_tokener_parse filed!\n");
-            return -EPROTO;
-        }
-
-        json_object *jlist;
-        json_object_object_get_ex(json_get, "list",&jlist);
-        if (json_object_array_length(jlist) != 0) {
-            json_object_put(json_get);
-            return -ENOTEMPTY;
-        }
-        json_object_put(json_get);
+    Http *r = Httpinit(buff);
+    if (r == NULL) {
+        int lasterrno = errno;
+        errorlog("can't resolve domain:%s\n", strerror(errno));
+        return -lasterrno;
     }
 
+    r->method = Httprequest::get;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
+
+    int ret = request(r);
+    Httpdestroy(r);
+    ERROR_CHECK(ret);
+
+    json_object *json_get = json_tokener_parse(bs.buf);
+    free(bs.buf);
+
+    if (json_get == NULL) {
+        errorlog("json_tokener_parse filed!\n");
+        return -EPROTO;
+    }
+
+    json_object *jlist;
+    json_object_object_get_ex(json_get, "list",&jlist);
+    if (json_object_array_length(jlist) != 0) {
+        json_object_put(json_get);
+        return -ENOTEMPTY;
+    }
+    json_object_put(json_get);
     return baidu_unlink(path);
 }
 
@@ -1493,9 +1493,10 @@ int baidu_utimens(const char *path, const struct timespec tv[2]){
     }
     node->st.st_atim = tv[0];
     node->st.st_mtim = tv[1];
-    node->flag &= ~SYNCED;
     if(node->opened == 0){
         while(baidu_updatemeta(node));
+    }else{
+        node->flag &= ~SYNCED;
     }
     node->unlock();
     return 0;
