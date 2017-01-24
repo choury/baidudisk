@@ -1198,9 +1198,9 @@ int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi){
         node->st.st_size = offset;
         node->file->lock();
         for (size_t i = 0; i < GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-            if (node->file->taskid.count(i) == 0 &&
+            if (node->file->taskid.count(i) == 0 &&         //如果这个block是脏的那么加个上传任务
                 (node->file->chunks[i].flag & BL_DIRTY) &&
-                time(0) - node->file->chunks[i].atime >= 10 )              //如果这个block是脏的那么加个上传任务
+                (node->file->dirty >= CACHEC || time(0) - node->file->chunks[i].atime >= 10))
             {
                 task_param *b = (task_param *)malloc(sizeof(task_param));
                 b->node = node;
@@ -1278,9 +1278,9 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
     node->flag |= DIRTY;
     node->file->lock();
     for (size_t i = 0; i < GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
-        if (node->file->taskid.count(i) == 0 &&
+        if (node->file->taskid.count(i) == 0 &&          //如果这个block是脏的那么加个上传任务
             (node->file->chunks[i].flag & BL_DIRTY) &&
-            time(0) - node->file->chunks[i].atime >= 10)              //如果这个block是脏的那么加个上传任务
+            (node->file->dirty >= CACHEC || time(0) - node->file->chunks[i].atime >= 10))
         {
             task_param *b = (task_param *)malloc(sizeof(task_param));
             b->node = node;
