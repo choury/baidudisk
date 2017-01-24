@@ -1410,7 +1410,7 @@ int baidu_updatemeta(inode_t *node){
 }
 
 
-int filesync(inode_t *node, int sync_meta){
+int filesync(inode_t *node, int sync_all){
     node->lock();
     if(node->flag & SYNCED ||node->file == nullptr || node->st.st_nlink == 0){
         node->unlock();
@@ -1418,7 +1418,7 @@ int filesync(inode_t *node, int sync_meta){
         return 0;
     }
     node->file->lock();
-    while(sync_meta && node->file->taskid.size()){
+    while(sync_all && node->file->taskid.size()){
         task_t taskid = node->file->taskid.begin()->second;
         node->file->unlock();
         waittask(taskid);
@@ -1443,7 +1443,7 @@ int filesync(inode_t *node, int sync_meta){
                     node->flag |= DIRTY;
                 }
             }
-            if(!sync_meta){
+            if(!sync_all){
                 break;
             }
             node->file->unlock();
@@ -1452,7 +1452,9 @@ int filesync(inode_t *node, int sync_meta){
             }
             node->file->lock();
         }
-        if(sync_meta && (node->flag & SYNCED) == 0){
+        if((sync_all && (node->flag & SYNCED) == 0) ||
+            (node->flag & DIRTY) == 0)
+        {
             if(node->blocklist){
                 json_object_put(node->blocklist);
             }
@@ -1461,9 +1463,9 @@ int filesync(inode_t *node, int sync_meta){
                 json_object_array_add(node->blocklist, json_object_new_string(node->file->chunks[i].name.c_str()));
             }
             while (baidu_updatemeta(node));
-            node->flag |= SYNCED;
         }
-    }else{
+    }
+    if(sync_all){
         node->flag |= SYNCED;
     }
     node->file->unlock();
