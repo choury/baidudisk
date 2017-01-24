@@ -141,23 +141,29 @@ void fcache::unlock(){
 int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
     int oc = size / blksize; //原来的块数
     int nc = offset / blksize;   //扩展后的块数
-    assert(size != (size_t)offset);
+    if(size == (size_t)offset){
+        return 0;
+    }
     lock();
     int ret = ftruncate(fd, offset);
+    int errno_save = errno;
     if(ret < 0){
         unlock();
-        return -errno;
+        return -errno_save;
     }
     if ((size_t)offset > size) {      //文件长度被扩展
-        for(int i=oc; i<=nc; ++i){
-            if((chunks[i].flag & BL_DIRTY) == 0){
-                chunks[i].flag |= BL_SYNCED;
-                chunks[i].flag |= BL_DIRTY;
-                dirty ++;
-            }
-            if(chunks[i].flag & BL_TRANS) {
-                chunks[i].flag |= BL_REOPEN;
-            }
+        if((chunks[oc].flag & BL_DIRTY) == 0){
+            chunks[oc].flag |= BL_SYNCED;
+            chunks[oc].flag |= BL_DIRTY;
+            dirty ++;
+        }
+        if(chunks[oc].flag & BL_TRANS) {
+            chunks[oc].flag |= BL_REOPEN;
+        }
+        for(int i=oc+1; i<=nc; ++i){
+            assert(chunks.count(i) == 0);
+            chunks[i].name = "x";
+            chunks[i].flag |= BL_SYNCED;
         }
     }else{
         if((chunks[nc].flag & BL_DIRTY) == 0){
@@ -178,6 +184,7 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
             chunks.erase(i);
         }
     }
+    chunks[nc].atime = time(0);
     unlock();
     return ret;
 }
@@ -198,12 +205,40 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
         chunks[c].flag |= BL_REOPEN;
     }
     ssize_t ret = pwrite(fd, buff, size, offset);
+    int errno_save = errno;
+    chunks[c].atime = time(0);
     unlock();
     if(ret < 0){
-        return -errno;
+        return -errno_save;
     }
     return ret;
 }
+
+ssize_t fcache::read(void* buff, size_t size, off_t offset, blksize_t blksize) {
+    assert(size <= (size_t)blksize);
+    lock();
+    size_t c = offset / blksize;
+    if(taskid.count(c)){
+        task_t taskid = this->taskid[c];
+        unlock();
+        waittask(taskid);
+        lock();
+    }
+    if ((chunks[c].flag & BL_SYNCED) ==0 ) {
+        unlock();
+        return -EAGAIN;              //如果在这里返回那么读取出错,重试
+    }
+    size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能读取的字节
+    ssize_t ret = pread(fd, buff, len, offset);
+    int errno_save = errno;
+    chunks[c].atime = time(0);
+    unlock();
+    if (ret < 0) {                   //读取出错了
+        return -errno_save;
+    }
+    return ret;
+}
+
 
 void fcache::synced(int bno, const char* path) {
     assert(path);
@@ -211,7 +246,7 @@ void fcache::synced(int bno, const char* path) {
     if(chunks.count(bno) &&
        (chunks[bno].flag & BL_REOPEN) == 0)
     {
-        if(chunks[bno].name[0]){
+        if(chunks[bno].name[0] && chunks[bno].name != "x"){
             droped.insert(chunks[bno].name);
         }
         chunks[bno].name = path;
@@ -311,8 +346,9 @@ bool inode_t::clear_cache(){
         return file == nullptr;
     }
     for(auto i = dir->entry.begin(); i!= dir->entry.end();){
-        if(i->second->file == nullptr &&
-           i->second->clear_cache())
+        if(i->second == nullptr ||
+           (i->second->file == nullptr &&
+           i->second->clear_cache()))
         {
             delete i->second;
             i = dir->entry.erase(i);
@@ -344,17 +380,19 @@ string inode_t::getname(){
     if(p == nullptr){
         return "";
     }
+    p->dir->lock();
     for(auto i:p->dir->entry){
         if(i.second == this){
+            p->dir->unlock();
             return i.first;
         }
     }
+    p->dir->unlock();
     assert(0);
     return "";
 }
 
 string inode_t::getcwd(){
-    lock();
     string path = getname();
     if(flag & CHUNKED){
         assert(S_ISREG(st.st_mode));
@@ -364,7 +402,6 @@ string inode_t::getcwd(){
     while((p = p->parent)){
         path = p->getname() +"/"+ path;
     }
-    unlock();
     return path;
 }
 
@@ -411,15 +448,14 @@ void inode_t::remove(){
 void inode_t::release(){
     lock();
     assert(file);
-    filesync(this, 1);
     opened--;
     if(opened == 0){
         assert(flag & SYNCED);
+        del_job((job_func)filesync, this);
         if( st.st_nlink == 0){
             delete this;
             return;
         }else{
-            add_job((job_func)trim, this, 0);
             add_job((job_func)cache_close, this, 300);
         }
     }

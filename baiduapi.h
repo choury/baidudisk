@@ -28,7 +28,7 @@ typedef struct {
 int gettoken();
 int refreshtoken();
 int trim(struct inode_t *node);
-int filesync(struct inode_t* node, int sync_meta);
+int filesync(struct inode_t* node);
 
 void *baidu_init (struct fuse_conn_info *conn);
 void baidu_destroy (void *);

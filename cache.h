@@ -22,6 +22,7 @@ struct fblock{
 #define BL_TRANS   4
 #define BL_REOPEN  8
     unsigned char flag = 0;
+    time_t atime = time(0);
 };
 
 struct fcache{
@@ -38,6 +39,7 @@ struct fcache{
     void synced(int bno, const char* path);
     int truncate(size_t size, off_t offset, blksize_t blksize);
     ssize_t write(const void* buff, size_t size, off_t offset, blksize_t blksize);
+    ssize_t read(void* buff, size_t size, off_t offset, blksize_t blksize);
     ~fcache();
 };
 
