@@ -934,6 +934,7 @@ int baidu_rmdir(const char *path) {
                 node->unlock();
                 return -ENOTEMPTY;
             }else{
+                node->unlock();
                 return baidu_unlink(path);
             }
         }
