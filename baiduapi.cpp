@@ -42,7 +42,6 @@ static char Access_Token[100];
  */
 static int handleerror(const char *msg)
 {
-//    errorlog("error mesage: %s\n", msg);
     json_object *json_get = json_tokener_parse(msg);
     if (json_get == NULL) {
         errorlog("json_tokener_parse filed!\n");
@@ -112,7 +111,7 @@ static int handleerror(const char *msg)
         break;
 
     default:
-        errorlog("No defined errno:%d\n", error);
+        errorlog("No defined errno:%s\n", msg);
         errno = EPROTO;
         break;
     }

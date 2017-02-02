@@ -326,14 +326,23 @@ inode_t* inode_t::add_entry(string path, const struct stat* st) {
         memcpy(&this->st, st, sizeof(struct stat));
         return this;
     }
-    inode_t* i = new inode_t(this);
-    memcpy(&i->st, st, sizeof(struct stat));
-    if(S_ISDIR(st->st_mode)){
-        i->dir = new dcache;
-    }
+    inode_t* i = nullptr;
     dir->lock();
-    assert(dir->entry.count(path) == 0 || dir->entry[path] == nullptr);
-    dir->entry[path] = i;
+    if(dir->entry.count(path) && dir->entry[path]){
+        i = dir->entry[path];
+        if(i->dir){
+            memcpy(&i->st, st, sizeof(struct stat));
+            assert((i->flag & SYNCED) == 0);
+            assert(i->file == nullptr);
+        }
+    }else{
+        i = new inode_t(this);
+        memcpy(&i->st, st, sizeof(struct stat));
+        if(S_ISDIR(st->st_mode)){
+            i->dir = new dcache;
+        }
+        dir->entry[path] = i;
+    }
     dir->unlock();
     return i;
 }
@@ -341,6 +350,7 @@ inode_t* inode_t::add_entry(string path, const struct stat* st) {
 
 bool inode_t::clear_cache(){
     lock();
+    flag &= ~SYNCED;
     if(dir == nullptr){
         unlock();
         return file == nullptr;
@@ -356,7 +366,6 @@ bool inode_t::clear_cache(){
             i++;
         }
     }
-    flag &= ~SYNCED;
     unlock();
     return empty();
 }
