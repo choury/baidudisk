@@ -355,15 +355,22 @@ bool inode_t::clear_cache(){
         return file == nullptr;
     }
     for(auto i = dir->entry.begin(); i!= dir->entry.end();){
-        if(i->second == nullptr ||
-           (i->second->file == nullptr &&
-           i->second->clear_cache()))
+        if(i->second == nullptr){
+            delete i->second;
+            i = dir->entry.erase(i);
+            continue;
+        }
+        if(i->second->file){
+           cache_close(i->second);
+        }
+        if(i->second->file == nullptr &&
+           i->second->clear_cache())
         {
             delete i->second;
             i = dir->entry.erase(i);
-        }else{
-            i++;
+            continue;
         }
+        i++;
     }
     unlock();
     return empty();
