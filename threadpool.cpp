@@ -32,7 +32,7 @@ void *dotask(long t) {                                //执行任务
         if ((node->flags & NEEDRET)==0 && val->waitc == 0){
             valmap.erase(pool.taskid[t]);
             pthread_cond_destroy(&val->cond);
-            delete val;
+            free(val);
         }
         pthread_mutex_unlock(&vallock);
         

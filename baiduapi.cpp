@@ -916,7 +916,20 @@ int baidu_unlink(const char *path) {
 
     int ret = request(r);
     Httpdestroy(r);
-    ERROR_CHECK(ret);
+    if(ret > CURL_LAST){
+        ret = handleerror(bs.buf);
+        free(bs.buf);
+        if(ret == -ENOENT){
+            node->remove();
+            return 0;
+        }
+        return ret;
+    }
+    if(ret != CURLE_OK) {
+        errorlog("network error:%d\n", ret);
+        free(bs.buf);
+        return -EPROTO;
+    }
 
     free(bs.buf);
     node->remove();
@@ -988,40 +1001,44 @@ int baidu_rmdir(const char *path) {
 /* 想猜你就继续猜吧
  */
 int baidu_rename(const char *oldname, const char *newname) {
-    inode_t *node = getnode(oldname);
-    if(node == nullptr){
+    inode_t *oldnode = getnode(oldname);
+    if(oldnode == nullptr){
         return -ENOENT;
     }
     char buff[3096];
     char oldfullpath[PATHLEN];
     char newfullpath[PATHLEN];
-    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s", basepath, node->getcwd().c_str());
-    if(node->flag & CHUNKED){
+    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s", basepath, oldnode->getcwd().c_str());
+    if(oldnode->flag & CHUNKED){
         snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s", basepath, encodepath(newname).c_str());
     }else{
         snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s", basepath, newname);
     }
-    node->unlock();
+    oldnode->unlock();
+    inode_t *newnode = getnode(newname);
+    if(newnode){
+        newnode->unlock();
+        snprintf(buff, sizeof(buff) - 1,
+                 "https://pcs.baidu.com/rest/2.0/pcs/file?"
+                 "method=delete&"
+                 "access_token=%s&"
+                 "path=%s"
+                 , Access_Token,  URLEncode(newfullpath).c_str());
 
-    Http *r = Httpinit(buff);
-    if (r == NULL) {
-        int lasterrno = errno;
-        errorlog("can't resolve domain:%s\n", strerror(errno));
-        return -lasterrno;
+        Http *r = Httpinit(buff);
+        if (r == NULL) {
+            int lasterrno = errno;
+            errorlog("can't resolve domain:%s\n", strerror(errno));
+            return -lasterrno;
+        }
+        r->method = Httprequest::get;
+        buffstruct bs = {0, 0, 0};
+        r->writefunc = savetobuff;
+        r->writeprame = &bs;
+        request(r);
+        free(bs.buf);
+        newnode->remove();
     }
-
-    snprintf(buff, sizeof(buff) - 1,
-             "https://pcs.baidu.com/rest/2.0/pcs/file?"
-             "method=delete&"
-             "access_token=%s&"
-             "path=%s"
-             , Access_Token,  URLEncode(newfullpath).c_str());
-
-    r->method = Httprequest::get;
-    buffstruct bs = {0, 0, 0};
-    r->writefunc = savetobuff;
-    r->writeprame = &bs;
-    request(r);
 
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -1030,15 +1047,23 @@ int baidu_rename(const char *oldname, const char *newname) {
              "from=%s&"
              "to=%s"
              , Access_Token, URLEncode(oldfullpath).c_str(), URLEncode(newfullpath).c_str());
-    
-    bs.offset = 0;
 
+    Http *r = Httpinit(buff);
+    if (r == NULL) {
+        int lasterrno = errno;
+        errorlog("can't resolve domain:%s\n", strerror(errno));
+        return -lasterrno;
+    }
+    r->method = Httprequest::get;
+    buffstruct bs = {0, 0, 0};
+    r->writefunc = savetobuff;
+    r->writeprame = &bs;
     int ret = request(r);
     Httpdestroy(r);
     ERROR_CHECK(ret);
 
     free(bs.buf);
-    node->move(newname);
+    oldnode->move(newname);
     return 0;
 }
 
@@ -1306,8 +1331,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
 }
 
 
-int trim(inode_t *node){
-    del_job((job_func)trim, node);
+static int trim(inode_t *node){
     assert(node->file);
     node->file->lock();
     if(node->file->droped.empty()){
@@ -1404,7 +1428,9 @@ int baidu_updatemeta(inode_t *node){
     json_object_put(jobj);
     ERROR_CHECK(ret);
     free(bs.buf);
-    add_job((job_func)trim, node, 0);
+    if(trim(node)){
+        errorlog("trim failed: %s\n", fullpath);
+    }
     return 0;
 }
 
@@ -1510,8 +1536,6 @@ int baidu_utimens(const char *path, const struct timespec tv[2]){
     node->st.st_mtim = tv[1];
     if(node->opened == 0){
         while(baidu_updatemeta(node));
-    }else{
-        node->flag &= ~SYNCED;
     }
     node->unlock();
     return 0;

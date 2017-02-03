@@ -302,7 +302,6 @@ inode_t::inode_t(inode_t *parent):parent(parent){
 inode_t::~inode_t(){
     assert(empty());
     del_job((job_func)cache_close, this);
-    del_job((job_func)trim, this);
     pthread_mutex_destroy(&Lock);
     if(blocklist){
         json_object_put(blocklist);
