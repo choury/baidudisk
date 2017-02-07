@@ -229,12 +229,10 @@ void readblock(task_param *tp) {
         }
         assert(bs.offset <= (size_t)param.blksize);
         assert(bs.buf == buf);
-/*
-        if(b.node->flag & CHUNKED)
-            xorcode(bs.buf, startp, bs.offset, ak);
-*/
-        
+
         param.node->file->lock();
+        if(param.node->flag & ENCRYPT)
+            xorcode(bs.buf, startp, bs.offset, ak);
         pwrite(param.node->file->fd, bs.buf, bs.offset, startp);
         param.node->file->chunks[param.bno].flag |= BL_SYNCED;
         param.node->file->unlock();
@@ -280,13 +278,10 @@ void uploadblock(task_param *tp) {
         assert((param.node->file->chunks[param.bno].flag & BL_TRANS) == 0);
         param.node->file->chunks[param.bno].flag |= BL_TRANS;
         read_bs.len = pread(param.node->file->fd, read_bs.buf, read_bs.len, param.bno*param.blksize);
+        if(param.node->flag & ENCRYPT)
+            xorcode(read_bs.buf, param.bno * param.blksize, read_bs.len, ak);
         param.node->file->unlock();
 
-/*
-        if(b.node->flag & ENCRYPT)
-            xorcode(read_bs.buf, GetWriteBlkStartPoint(b.bno), read_bs.len, ak);
-*/
-        
         r->method = Httprequest::post_formdata;
         r->readfunc = readfrombuff;
         r->readprame = &read_bs;
@@ -410,13 +405,22 @@ int readchunkattr(task_param *tp) {
         st.st_blksize = json_object_get_int64(jblksize);
         assert(st.st_blksize % 4096 == 0);
         
-        json_object *jblock_list;
-        json_object_object_get_ex(json_get, "block_list",&jblock_list);
         
         st.st_mode = S_IFREG | 0666;
         
         inode_t* node = param.node->add_entry(bname, &st);
+        json_object *jblock_list;
+        json_object_object_get_ex(json_get, "block_list",&jblock_list);
+
         node->blocklist = json_object_get(jblock_list);
+        json_object *jencoding;
+        json_object_object_get_ex(json_get, "encoding", &jencoding);
+        const char *encoding = json_object_get_string(jencoding);
+        if(strcasecmp(encoding, "xor") == 0){
+            node->flag |= ENCRYPT;
+        }else{
+            assert(strcasecmp(encoding, "none") == 0);
+        }
         node->flag |= CHUNKED;
         json_object_put(json_get);
     }while(0);
@@ -1088,8 +1092,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     
     i->file = new fcache();
     i->opened = 1;
-    i->flag |= CHUNKED;
-    i->flag |= DIRTY;
+    i->flag |= CHUNKED | DIRTY | ENCRYPT;
 
     fi->fh = (uint64_t)i;
     add_job((job_func)filesync, i, 60);
@@ -1411,7 +1414,11 @@ int baidu_updatemeta(inode_t *node){
     json_object_object_add(jobj, "ctime", json_object_new_int64(node->st.st_ctime));
     json_object_object_add(jobj, "mtime", json_object_new_int64(node->st.st_mtime));
     json_object_object_add(jobj, "blksize", json_object_new_int64(node->st.st_blksize));
-    json_object_object_add(jobj, "encoding", json_object_new_string("none"));
+    if(node->flag & ENCRYPT){
+        json_object_object_add(jobj, "encoding", json_object_new_string("xor"));
+    }else{
+        json_object_object_add(jobj, "encoding", json_object_new_string("none"));
+    }
     json_object_object_add(jobj, "block_list", json_object_get(node->blocklist));
     const char *jstring = json_object_to_json_string(jobj);
     buffstruct read_bs = {0, strlen(jstring), (char *)jstring};

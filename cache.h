@@ -68,6 +68,7 @@ public:
 #define SYNCED         1                        //是否已同步
 #define DIRTY          2                        //是否已修改
 #define CHUNKED        4                        //分块文件,可写
+#define ENCRYPT        8                         //xor编码
     uint32_t flag = 0;
     uint32_t opened = 0;
     inode_t(inode_t* parent);

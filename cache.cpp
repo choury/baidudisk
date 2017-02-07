@@ -365,7 +365,6 @@ inode_t* inode_t::add_entry(string path, const struct stat* st) {
 
 bool inode_t::clear_cache(){
     auto_lock l(&Lock);
-    flag &= ~SYNCED;
     if(dir){
         assert(file == nullptr);
         for(auto i = dir->entry.begin(); i!= dir->entry.end();){
@@ -382,13 +381,16 @@ bool inode_t::clear_cache(){
             }
             i++;
         }
+        flag &= ~SYNCED;
         return empty();
     }
     if(file){
         assert(dir == nullptr);
         cache_close(this);
+        flag &= ~SYNCED;
         return file == nullptr;
     }
+    flag &= ~SYNCED;
     return true;
 }
 
