@@ -204,7 +204,7 @@ void readblock(task_param *tp) {
         
         r->method = Httprequest::get;
         
-        buf = (char *)malloc(param.blksize);
+        buf = (char *)calloc(param.blksize, 1);
         buffstruct bs = {0, (size_t)param.blksize, buf};
         r->writefunc = savetobuff;
         r->writeprame = &bs;
@@ -593,12 +593,13 @@ int baidu_getattr(const char *path, struct stat *st) {
         return 0;
     }
     struct fuse_file_info fi;
-    int ret = baidu_opendir(dirname(path).c_str(), &fi);
+    std::string dname = dirname(path);
+    int ret = baidu_opendir(dname.c_str(), &fi);
     if(ret){
         return ret;
     }
     std::string bname = basename(path);
-    inode_t* node = getnode(dirname(path).c_str());
+    inode_t* node = getnode(dname.c_str());
     assert(node->flag & SYNCED);
     node->dir->lock();
     node->unlock();
@@ -1287,9 +1288,17 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
         waittask(taskid);
         node->file->lock();
         if((node->file->chunks[c].flag & BL_SYNCED) == 0){
-            node->file->unlock();
-            return -EAGAIN;
+            if((node->file->chunks[c].flag & BL_RETRY) == 0){
+                node->file->chunks[c].flag |= BL_RETRY;
+                node->file->unlock();
+                return baidu_write(path, buf, size, offset, fi);
+            }else{
+                node->file->chunks[c].flag &= ~BL_RETRY;
+                node->file->unlock();
+                return -EAGAIN;
+            }
         }
+        node->file->chunks[c].flag &= ~BL_RETRY;
     }
     node->file->unlock();
     int len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能写入的字节

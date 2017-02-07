@@ -12,6 +12,18 @@
 
 using namespace std;
 
+class auto_lock {
+    pthread_mutex_t* l;
+public:
+    auto_lock(pthread_mutex_t* _lock){
+        l = _lock;
+        pthread_mutex_lock(l);
+    }
+    ~auto_lock(){
+        pthread_mutex_unlock(l);
+    }
+};
+
 
 //在家目录.baidudisk目录下生成临时缓存文件
 static int tempfile() {
@@ -144,11 +156,10 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
     if(size == (size_t)offset){
         return 0;
     }
-    lock();
+    auto_lock l(&Lock);
     int ret = ftruncate(fd, offset);
     int errno_save = errno;
     if(ret < 0){
-        unlock();
         return -errno_save;
     }
     if ((size_t)offset > size) {      //文件长度被扩展
@@ -185,13 +196,12 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
         }
     }
     chunks[nc].atime = time(0);
-    unlock();
     return ret;
 }
 
 ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blksize){
     assert(size <= (size_t)blksize);
-    lock();
+    auto_lock l(&Lock);
     size_t c = offset / blksize;
     while(dirty >= CACHEC) {
         pthread_cond_wait(&wait, &Lock);
@@ -207,7 +217,6 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
     ssize_t ret = pwrite(fd, buff, size, offset);
     int errno_save = errno;
     chunks[c].atime = time(0);
-    unlock();
     if(ret < 0){
         return -errno_save;
     }
@@ -216,8 +225,8 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
 
 ssize_t fcache::read(void* buff, size_t size, off_t offset, blksize_t blksize) {
     assert(size <= (size_t)blksize);
-    lock();
     size_t c = offset / blksize;
+    lock();
     if(taskid.count(c)){
         task_t taskid = this->taskid[c];
         unlock();
@@ -225,9 +234,17 @@ ssize_t fcache::read(void* buff, size_t size, off_t offset, blksize_t blksize) {
         lock();
     }
     if ((chunks[c].flag & BL_SYNCED) ==0 ) {
-        unlock();
-        return -EAGAIN;              //如果在这里返回那么读取出错,重试
+        if((chunks[c].flag & BL_RETRY)  == 0){              //如果在这里返回那么读取出错,重试一次
+            chunks[c].flag |= BL_RETRY;
+            unlock();
+            return read(buff, size, offset, blksize);
+        }else{
+            chunks[c].flag &= ~BL_RETRY;
+            unlock();
+            return -EAGAIN;
+        }
     }
+    chunks[c].flag &= ~BL_RETRY;
     size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能读取的字节
     ssize_t ret = pread(fd, buff, len, offset);
     int errno_save = errno;
@@ -242,7 +259,7 @@ ssize_t fcache::read(void* buff, size_t size, off_t offset, blksize_t blksize) {
 
 void fcache::synced(int bno, const char* path) {
     assert(path);
-    lock();
+    auto_lock l(&Lock);
     if(chunks.count(bno) &&
        (chunks[bno].flag & BL_REOPEN) == 0)
     {
@@ -256,7 +273,6 @@ void fcache::synced(int bno, const char* path) {
     }else{
         droped.insert(path);
     }
-    unlock();
 }
 
 fcache::~fcache(){
@@ -348,35 +364,36 @@ inode_t* inode_t::add_entry(string path, const struct stat* st) {
 
 
 bool inode_t::clear_cache(){
-    lock();
+    auto_lock l(&Lock);
     flag &= ~SYNCED;
-    if(dir == nullptr){
-        unlock();
+    if(dir){
+        assert(file == nullptr);
+        for(auto i = dir->entry.begin(); i!= dir->entry.end();){
+            if(i->second == nullptr){
+                delete i->second;
+                i = dir->entry.erase(i);
+                continue;
+            }
+            if(i->second->clear_cache())
+            {
+                delete i->second;
+                i = dir->entry.erase(i);
+                continue;
+            }
+            i++;
+        }
+        return empty();
+    }
+    if(file){
+        assert(dir == nullptr);
+        cache_close(this);
         return file == nullptr;
     }
-    for(auto i = dir->entry.begin(); i!= dir->entry.end();){
-        if(i->second == nullptr){
-            delete i->second;
-            i = dir->entry.erase(i);
-            continue;
-        }
-        if(i->second->file){
-           cache_close(i->second);
-        }
-        if(i->second->file == nullptr &&
-           i->second->clear_cache())
-        {
-            delete i->second;
-            i = dir->entry.erase(i);
-            continue;
-        }
-        i++;
-    }
-    unlock();
-    return empty();
+    return true;
 }
 
 inode_t* inode_t::getnode(const string& path) {
+    auto_lock l(&Lock);
     if(path == "." || path == "/") {
         return this;
     } else {
@@ -479,11 +496,10 @@ void inode_t::release(){
 
 void inode_t::move(const string& path){
     inode_t* p = super_node.getnode(dirname(path));
-    lock();
+    auto_lock l(&Lock);
     parent->dir->entry.erase(getname());
     p->dir->entry[basename(path)] = this;
     parent = p;
-    unlock();
 }
 
 int inode_t::lock(){

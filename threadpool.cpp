@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <semaphore.h>
 #include <unordered_map>
+#include <assert.h>
 
 
 using namespace std;
@@ -25,7 +26,9 @@ void *dotask(long t) {                                //执行任务
         retval = node->task(node->param);
 
         pthread_mutex_lock(&vallock);
+        assert(pool.taskid[t] < pool.curid);
         valnode * val=valmap[pool.taskid[t]];
+        assert(val);
         val->done = 1;
         val->val = retval;         //存储结果
         pthread_cond_broadcast(&val->cond); //发信号告诉waittask
@@ -122,6 +125,7 @@ task_t addtask(taskfunc task, void *param , uint flags) {
     pthread_mutex_lock(&vallock);
     t->taskid = pool.curid++;
     valmap[t->taskid] = val;
+    assert(val);
     pthread_mutex_unlock(&vallock);
     
     sem_post(&tasksum);                                       //发信号给调度线程
@@ -136,6 +140,7 @@ task_t addtask(taskfunc task, void *param , uint flags) {
 void *waittask(task_t id) {
     void *retval = NULL;
     pthread_mutex_lock(&vallock);
+    assert(id < pool.curid);
     auto t = valmap.find(id);
 
     if (t == valmap.end()) {                     //没有该任务或者已经取回结果，返回NULL
@@ -161,7 +166,7 @@ void *waittask(task_t id) {
 
 int taskisdoing(task_t id) {
     pthread_mutex_lock(&vallock);
-
+    assert(id < pool.curid);
     auto t = valmap.count(id);                     //没有该任务或者已经取回结果，返回0
     pthread_mutex_unlock(&vallock);
     return t;

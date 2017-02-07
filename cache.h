@@ -21,6 +21,7 @@ struct fblock{
 #define BL_DIRTY   2
 #define BL_TRANS   4
 #define BL_REOPEN  8
+#define BL_RETRY   16
     unsigned char flag = 0;
     time_t atime = time(0);
 };
