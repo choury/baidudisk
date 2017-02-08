@@ -8,7 +8,7 @@
 using namespace std;
 
 thrdpool pool;
-pthread_mutex_t schedlock;              //给任务队列加锁
+pthread_mutex_t poollock;              //给任务队列加锁
 pthread_mutex_t vallock;                //给结果集合用的锁
 
 sem_t tasksum;                                          //等待调度的任务数
@@ -22,12 +22,13 @@ void *dotask(long t) {                                //执行任务
 
     while (1) {
         pthread_mutex_lock(pool.lock + t);            //等待任务
+        pthread_mutex_lock(&poollock);
         tasknode* node = pool.tsk[t];
+        pthread_mutex_unlock(&poollock);
         retval = node->task(node->param);
 
         pthread_mutex_lock(&vallock);
-        assert(pool.taskid[t] < pool.curid);
-        valnode * val=valmap[pool.taskid[t]];
+        valnode * val=valmap[node->taskid];
         assert(val);
         val->done = 1;
         val->val = retval;         //存储结果
@@ -41,9 +42,12 @@ void *dotask(long t) {                                //执行任务
         
         pthread_mutex_destroy(&node->lock);
         free(node);
+        
+        pthread_mutex_lock(&poollock);
         pool.tsk[t] = 0;
         pool.taskid[t] = 0;
         sem_post(&trdsum);
+        pthread_mutex_unlock(&poollock);
     }
 
     return NULL;
@@ -57,15 +61,14 @@ void sched() {
         sem_wait(&tasksum);                       //等待addtask的信号
         sem_wait(&trdsum);                        //等待一个空闲进程
 
+        pthread_mutex_lock(&poollock);
         for (i = 0; i < pool.num; ++i) {
             if (pool.taskid[i] == 0)break;        //找到空闲进程号
         }
-
         pool.tsk[i] = pool.taskhead;                //分配任务
         pool.taskid[i] = pool.taskhead->taskid;
-        pthread_mutex_lock(&schedlock);
         pool.taskhead = pool.taskhead->next;        //把该任务从队列中取下
-        pthread_mutex_unlock(&schedlock);
+        pthread_mutex_unlock(&poollock);
         pthread_mutex_unlock(&pool.tsk[i]->lock);
         pthread_mutex_unlock(pool.lock + i);      //启动dotask
     }
@@ -87,7 +90,7 @@ void creatpool(int threadnum) {
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 20*1024*1024);               //设置20M的栈
     pthread_create(&pool.sched, &attr , (taskfunc)sched, NULL); //创建调度线程
-    pthread_mutex_init(&schedlock, NULL);
+    pthread_mutex_init(&poollock, NULL);
     pthread_mutex_init(&vallock, NULL);
     for (long i = 0; i < pool.num; ++i) {
         pthread_mutex_init(pool.lock + i, NULL);
@@ -107,7 +110,7 @@ task_t addtask(taskfunc task, void *param , uint flags) {
     t->flags = flags;
     pthread_mutex_init(&t->lock ,NULL);
     pthread_mutex_lock(&t->lock);
-    pthread_mutex_lock(&schedlock);
+    pthread_mutex_lock(&poollock);
 
     if (pool.taskhead == NULL) {                              //加入任务队列尾部
         pool.taskhead = pool.tasktail = t;
@@ -116,7 +119,7 @@ task_t addtask(taskfunc task, void *param , uint flags) {
         pool.tasktail = t;
     }
 
-    pthread_mutex_unlock(&schedlock);
+    pthread_mutex_unlock(&poollock);
 
     valnode *val = (valnode *)malloc(sizeof(valnode));
     val->done = 0;
@@ -140,7 +143,6 @@ task_t addtask(taskfunc task, void *param , uint flags) {
 void *waittask(task_t id) {
     void *retval = NULL;
     pthread_mutex_lock(&vallock);
-    assert(id < pool.curid);
     auto t = valmap.find(id);
 
     if (t == valmap.end()) {                     //没有该任务或者已经取回结果，返回NULL
@@ -166,7 +168,6 @@ void *waittask(task_t id) {
 
 int taskisdoing(task_t id) {
     pthread_mutex_lock(&vallock);
-    assert(id < pool.curid);
     auto t = valmap.count(id);                     //没有该任务或者已经取回结果，返回0
     pthread_mutex_unlock(&vallock);
     return t;
