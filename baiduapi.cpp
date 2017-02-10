@@ -364,6 +364,13 @@ int readchunkattr(task_param *tp) {
         Httpdestroy(r);
         if(ret > CURL_LAST){
             ret = handleerror(bs.buf);
+            if(ret == -ENOENT){
+                param.node->dir->lock();
+                assert(param.node->dir->entry.count(bname));
+                assert(param.node->dir->entry[bname] == nullptr);
+                param.node->dir->entry.erase(bname);
+                param.node->dir->unlock();
+            }
             free(bs.buf);
             break;
         }

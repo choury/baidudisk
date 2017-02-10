@@ -28,15 +28,18 @@ void *dotask(long t) {                                //执行任务
         retval = node->task(node->param);
 
         pthread_mutex_lock(&vallock);
+        assert(valmap.count(node->taskid));
         valnode * val=valmap[node->taskid];
         assert(val);
-        val->done = 1;
-        val->val = retval;         //存储结果
-        pthread_cond_broadcast(&val->cond); //发信号告诉waittask
+        assert(val->done == 0);
         if ((node->flags & NEEDRET)==0 && val->waitc == 0){
-            valmap.erase(pool.taskid[t]);
+            valmap.erase(node->taskid);
             pthread_cond_destroy(&val->cond);
             free(val);
+        }else{
+            val->done = 1;
+            val->val = retval;         //存储结果
+            pthread_cond_broadcast(&val->cond); //发信号告诉waittask
         }
         pthread_mutex_unlock(&vallock);
         
@@ -143,23 +146,25 @@ task_t addtask(taskfunc task, void *param , uint flags) {
 void *waittask(task_t id) {
     void *retval = NULL;
     pthread_mutex_lock(&vallock);
-    auto t = valmap.find(id);
+    int count = valmap.count(id);
 
-    if (t == valmap.end()) {                     //没有该任务或者已经取回结果，返回NULL
+    if (count == 0) {                     //没有该任务或者已经取回结果，返回NULL
         pthread_mutex_unlock(&vallock);
         return NULL;
     }
     
-    t->second->waitc++;
-    while(t->second->done == 0){
-        pthread_cond_wait(&t->second->cond, &vallock);        //等待任务结束
+    valnode *val = valmap[id];
+    val->waitc++;
+    while(val->done == 0){
+        pthread_cond_wait(&val->cond, &vallock);        //等待任务结束
     }
 
-    retval=t->second->val;
-    if(--t->second->waitc==0){                                  //没有其他线程在等待结果，做清理操作
-        pthread_cond_destroy(&t->second->cond); 
-        free(t->second);
-        valmap.erase(t); 
+    retval=val->val;
+    val->waitc -- ;
+    if(val->waitc==0){                                  //没有其他线程在等待结果，做清理操作
+        pthread_cond_destroy(&val->cond); 
+        free(val);
+        valmap.erase(id); 
     }
     pthread_mutex_unlock(&vallock);
     return retval;
