@@ -143,8 +143,8 @@ static size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
         bs->len = 1024;
     }
     size_t len = size * nmemb;
-    if(bs->offset + len > bs->len){
-        bs->len = (bs->offset + len + 1023)/1024*1024;
+    if(bs->offset + len >= bs->len){
+        bs->len = ((bs->offset + len)&0xfffffffffc00)+1024;
         bs->buf = (char*)realloc(bs->buf, bs->len);
         memset(bs->buf + bs->offset, 0, bs->len - bs->offset);
     }
@@ -204,8 +204,8 @@ void readblock(task_param *tp) {
         
         r->method = Httprequest::get;
         
-        buf = (char *)calloc(param.blksize, 1);
-        buffstruct bs = {0, (size_t)param.blksize, buf};
+        buf = (char *)calloc(param.blksize + 1, 1);
+        buffstruct bs = {0, (size_t)param.blksize + 1, buf};
         r->writefunc = savetobuff;
         r->writeprame = &bs;
         r->timeout = param.blksize/(10*1024);
@@ -267,8 +267,8 @@ void uploadblock(task_param *tp) {
             break;
         }
 
-        buf = (char *)malloc(param.blksize);
-        buffstruct read_bs = {0, (size_t)param.blksize, buf};
+        buf = (char *)malloc(param.blksize+1);
+        buffstruct read_bs = {0, (size_t)param.blksize+1, buf};
         param.node->file->lock();
         if((param.node->file->chunks.count(param.bno)) == 0){ //it was truncated
             param.node->file->unlock();

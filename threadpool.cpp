@@ -28,24 +28,24 @@ void *dotask(long t) {                                //执行任务
         retval = node->task(node->param);
 
         pthread_mutex_lock(&vallock);
-        assert(valmap.count(node->taskid));
-        valnode * val=valmap[node->taskid];
+        valnode * val=valmap.at(node->taskid);
         assert(val);
         assert(val->done == 0);
-        if ((node->flags & NEEDRET)==0 && val->waitc == 0){
-            valmap.erase(node->taskid);
-            pthread_cond_destroy(&val->cond);
-            free(val);
-        }else{
+        assert(val->val == nullptr);
+        if(val->waitc || (node->flags & NEEDRET)){
             val->done = 1;
             val->val = retval;         //存储结果
             pthread_cond_broadcast(&val->cond); //发信号告诉waittask
+        }else{
+            valmap.erase(node->taskid);
+            pthread_cond_destroy(&val->cond);
+            free(val);
         }
         pthread_mutex_unlock(&vallock);
-        
+
         pthread_mutex_destroy(&node->lock);
         free(node);
-        
+
         pthread_mutex_lock(&poollock);
         pool.tsk[t] = 0;
         pool.taskid[t] = 0;
@@ -127,6 +127,7 @@ task_t addtask(taskfunc task, void *param , uint flags) {
     valnode *val = (valnode *)malloc(sizeof(valnode));
     val->done = 0;
     val->waitc = 0;
+    val->val = nullptr;
     val->cond=PTHREAD_COND_INITIALIZER;  
     pthread_mutex_lock(&vallock);
     t->taskid = pool.curid++;
@@ -153,9 +154,10 @@ void *waittask(task_t id) {
         return NULL;
     }
     
-    valnode *val = valmap[id];
+    valnode *val = valmap.at(id);
     val->waitc++;
     while(val->done == 0){
+        assert(val->val == nullptr);
         pthread_cond_wait(&val->cond, &vallock);        //等待任务结束
     }
 
