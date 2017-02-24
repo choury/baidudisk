@@ -500,6 +500,7 @@ void inode_t::move(const string& path){
     inode_t* p = super_node.getnode(dirname(path));
     auto_lock l(&Lock);
     parent->dir->entry.erase(getname());
+    assert(p->dir->entry.count(basename(path)) == 0);
     p->dir->entry[basename(path)] = this;
     parent = p;
 }
