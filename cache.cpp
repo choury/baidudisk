@@ -245,7 +245,7 @@ ssize_t fcache::read(void* buff, size_t size, off_t offset, blksize_t blksize) {
         }
     }
     chunks[c].flag &= ~BL_RETRY;
-    size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能读取的字节
+    size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - (size_t)offset);      //计算最长能读取的字节
     ssize_t ret = pread(fd, buff, len, offset);
     int errno_save = errno;
     chunks[c].atime = time(0);

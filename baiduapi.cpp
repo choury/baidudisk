@@ -157,7 +157,7 @@ static size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
 static size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p)
 {
     buffstruct *bs = (buffstruct *) user_p;
-    size_t len = std::min(size * nmemb, (bs->len) - bs->offset);
+    size_t len = std::min(size * nmemb, (bs->len) - (size_t)bs->offset);
     memcpy(buffer, bs->buf + bs->offset, len);
     bs->offset += len;
     return len;
@@ -212,7 +212,7 @@ void readblock(task_param *tp) {
         
         char range[100] = {0};
         if((param.node->flag & CHUNKED) == 0){
-            snprintf(range, sizeof(range) - 1, "%lu-%lu", startp, startp + param.blksize - 1);
+            snprintf(range, sizeof(range) - 1, "%zu-%lu", startp, startp + param.blksize - 1);
             r->range = range;
         }
         
@@ -1215,7 +1215,7 @@ int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fu
     }while (node->file->taskid.size() < CACHEC);
     node->file->unlock();
     node->unlock();
-    size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能读取的字节
+    size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - (size_t)offset);      //计算最长能读取的字节
     int ret = node->file->read(buf, len, offset, blksize);
     if (ret != (ssize_t)len) {                   //读取出错了
         return ret;
@@ -1321,7 +1321,7 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
         node->file->chunks[c].flag &= ~BL_RETRY;
     }
     node->file->unlock();
-    int len = std::min(size, GetBlkEndPointFromP(offset, blksize) - offset);      //计算最长能写入的字节
+    int len = std::min(size, GetBlkEndPointFromP(offset, blksize) - (size_t)offset);      //计算最长能写入的字节
     int ret = node->file->write(buf, len, offset, blksize);
     node->lock();
     if(ret>0 && ret + offset > node->st.st_size){
