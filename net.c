@@ -183,8 +183,6 @@ static CURL* getcurl(){
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5);
     curl_easy_setopt(curl, CURLOPT_HEADER, 0);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 5);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 10);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 120);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
     curl_easy_setopt(curl, CURLOPT_VERBOSE, 0);
@@ -216,6 +214,10 @@ CURLcode request(Http *r){
     curl_easy_setopt(r->curl_handle, CURLOPT_URL, r->url);
     curl_easy_setopt(r->curl_handle, CURLOPT_REFERER, r->url);
     curl_easy_setopt(r->curl_handle, CURLOPT_TIMEOUT, r->timeout);
+    if(r->timeout > 60){
+        curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_LIMIT, 5);
+        curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_TIME, 10);
+    }
     if(r->range){
         curl_easy_setopt(r->curl_handle, CURLOPT_RANGE, r->range);
     }
