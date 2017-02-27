@@ -267,8 +267,8 @@ void uploadblock(task_param *tp) {
             break;
         }
 
-        buf = (char *)malloc(param.blksize+1);
-        buffstruct read_bs = {0, (size_t)param.blksize+1, buf};
+        buf = (char *)malloc(param.blksize);
+        buffstruct read_bs = {0, (size_t)param.blksize, buf};
         param.node->file->lock();
         if((param.node->file->chunks.count(param.bno)) == 0){ //it was truncated
             param.node->file->unlock();
