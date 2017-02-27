@@ -1489,7 +1489,8 @@ int filesync(inode_t *node, int sync_all){
             for (size_t i = 0; i <= GetBlkNo(node->st.st_size, node->st.st_blksize); ++i) {
                 if (node->file->taskid.count(i)) {
                     waitset.insert(node->file->taskid[i]);
-                }else if (node->st.st_nlink && (node->file->chunks[i].flag & BL_DIRTY)) {
+                    node->flag |= DIRTY;
+                }else if (node->file->chunks[i].flag & BL_DIRTY) {
                     task_param *b = (task_param *)malloc(sizeof(task_param));
                     b->node =  node;
                     b->bno = i;

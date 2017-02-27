@@ -164,7 +164,6 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
     }
     if ((size_t)offset > size) {      //文件长度被扩展
         if((chunks[oc].flag & BL_DIRTY) == 0){
-            chunks[oc].flag |= BL_SYNCED;
             chunks[oc].flag |= BL_DIRTY;
             dirty ++;
         }
