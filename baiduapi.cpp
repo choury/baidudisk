@@ -1140,6 +1140,7 @@ int baidu_open(const char *path, struct fuse_file_info *fi) {
     if(node->file){
         node->opened++;
         fi->fh = (uint64_t)node;
+        add_job((job_func)filesync, node, 60);
         node->unlock();
         return 0;
     }
