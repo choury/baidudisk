@@ -231,10 +231,12 @@ void readblock(task_param *tp) {
         assert(bs.buf == buf);
 
         param.node->file->lock();
-        if(param.node->flag & ENCRYPT)
-            xorcode(bs.buf, startp, bs.offset, ak);
-        pwrite(param.node->file->fd, bs.buf, bs.offset, startp);
-        param.node->file->chunks[param.bno].flag |= BL_SYNCED;
+        if((param.node->file->chunks[param.bno].flag & BL_SYNCED) == 0){
+            if(param.node->flag & ENCRYPT)
+                xorcode(bs.buf, startp, bs.offset, ak);
+            pwrite(param.node->file->fd, bs.buf, bs.offset, startp);
+            param.node->file->chunks[param.bno].flag |= BL_SYNCED;
+        }
         param.node->file->unlock();
     }while(0);
     free(buf);
@@ -1290,7 +1292,10 @@ int baidu_write(const char *path, const char *buf, size_t size, off_t offset, st
     }
     node->file->lock();
     node->unlock();
-    if (node->file->chunks.count(c) && node->st.st_size){
+    if(offset == c*blksize && size >= (size_t)blksize){
+       node->file->chunks[c].flag |= BL_SYNCED;
+    }
+    if(node->file->chunks.count(c) && node->st.st_size){
         if(node->file->taskid.count(c) == 0 &&
            (node->file->chunks[c].flag & BL_SYNCED) == 0)
         {
