@@ -3,7 +3,7 @@
 #include <fuse.h>
 
 
-#define THREADS 50
+#define THREADS 20
 
 /*
  * 各api定义参阅http://developer.baidu.com/wiki/index.php?title=docs/pcs/rest/file_data_apis_list
@@ -18,11 +18,6 @@ extern "C" {
 
 extern char confpath[];
     
-typedef struct {
-    size_t offset;
-    size_t len;
-    char *buf;
-} buffstruct;
 
 
 int gettoken();

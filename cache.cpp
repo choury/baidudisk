@@ -165,27 +165,29 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
     if ((size_t)offset > size) {      //文件长度被扩展
         if((chunks[oc].flag & BL_DIRTY) == 0){
             chunks[oc].flag |= BL_DIRTY;
-            dirty ++;
+            dirty.insert(&chunks[oc]);
         }
         if(chunks[oc].flag & BL_TRANS) {
             chunks[oc].flag |= BL_REOPEN;
         }
         for(int i=oc+1; i<=nc; ++i){
             assert(chunks.count(i) == 0);
+            chunks[i].id = i;
             chunks[i].name = "x";
             chunks[i].flag |= BL_SYNCED;
         }
     }else{
         if((chunks[nc].flag & BL_DIRTY) == 0){
             chunks[nc].flag |= BL_DIRTY;
-            dirty ++;
+            dirty.insert(&chunks[nc]);
         }
         if(chunks[nc].flag & BL_TRANS) {
             chunks[nc].flag |= BL_REOPEN;
         }
         for(int i=nc+1; i<=oc; ++i){
+            //truncate 掉的就不需要再上传了
             if(chunks[i].flag & BL_DIRTY){
-                dirty --;
+                dirty.erase(&chunks[i]);
                 pthread_cond_signal(&wait);
             }
             if(chunks[i].name[0]){
@@ -202,20 +204,22 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
     assert(size <= (size_t)blksize);
     auto_lock l(&Lock);
     size_t c = offset / blksize;
-    while(dirty >= CACHEC) {
+    while(dirty.size() >= CACHEC) {
         pthread_cond_wait(&wait, &Lock);
     }
-    if((chunks[c].flag & BL_DIRTY) == 0){
-        chunks[c].flag |= BL_DIRTY;
-        chunks[c].flag |= BL_SYNCED;
-        dirty ++;
+    assert(chunks.count(c));
+    fblock& fb = chunks[c];
+    if((fb.flag & BL_DIRTY) == 0){
+        fb.flag |= BL_DIRTY;
+        fb.flag |= BL_SYNCED;
+        dirty.insert(&fb);
     }
-    if(chunks[c].flag & BL_TRANS) {
-        chunks[c].flag |= BL_REOPEN;
+    if(fb.flag & BL_TRANS) {
+        fb.flag |= BL_REOPEN;
     }
     ssize_t ret = pwrite(fd, buff, size, offset);
     int errno_save = errno;
-    chunks[c].atime = time(0);
+    fb.atime = time(0);
     if(ret < 0){
         return -errno_save;
     }
@@ -226,28 +230,13 @@ ssize_t fcache::read(void* buff, size_t size, off_t offset, blksize_t blksize) {
     assert(size <= (size_t)blksize);
     size_t c = offset / blksize;
     lock();
-    if(taskid.count(c)){
-        task_t taskid = this->taskid[c];
-        unlock();
-        waittask(taskid);
-        lock();
-    }
-    if ((chunks[c].flag & BL_SYNCED) ==0 ) {
-        if((chunks[c].flag & BL_RETRY)  == 0){              //如果在这里返回那么读取出错,重试一次
-            chunks[c].flag |= BL_RETRY;
-            unlock();
-            return read(buff, size, offset, blksize);
-        }else{
-            chunks[c].flag &= ~BL_RETRY;
-            unlock();
-            return -EAGAIN;
-        }
-    }
-    chunks[c].flag &= ~BL_RETRY;
+    assert(chunks.count(c));
+    fblock& fb = chunks[c];
+    assert(fb.flag & BL_SYNCED);
     size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - (size_t)offset);      //计算最长能读取的字节
     ssize_t ret = pread(fd, buff, len, offset);
     int errno_save = errno;
-    chunks[c].atime = time(0);
+    fb.atime = time(0);
     unlock();
     if (ret < 0) {                   //读取出错了
         return -errno_save;
@@ -267,7 +256,8 @@ void fcache::synced(int bno, const char* path) {
         }
         chunks[bno].name = path;
         chunks[bno].flag &= ~BL_DIRTY;
-        dirty --;
+        assert(dirty.count(&chunks[bno]));
+        dirty.erase(&chunks[bno]);
         pthread_cond_signal(&wait);
     }else{
         droped.insert(path);

@@ -34,6 +34,14 @@ void Httpdestroy(Http *hh);
 CURLcode request( Http *r );                        //发送请求
 extern int (*errorlog)(const char * __restrict fmt,...);
 
+typedef struct {
+    size_t offset;
+    size_t len;
+    char *buf;
+} buffstruct;
+
+size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p);
+size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p);
 #ifdef __cplusplus
 }
 #endif

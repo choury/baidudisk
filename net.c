@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
+#include <assert.h>
 
 #include "net.h"
 
@@ -179,11 +180,11 @@ static CURL* getcurl(){
     curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 0);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 1);
-    curl_easy_setopt(curl, CURLOPT_CLOSEPOLICY, CURLCLOSEPOLICY_LEAST_RECENTLY_USED);
+    curl_easy_setopt(curl, CURLOPT_CLOSEPOLICY, CURLCLOSEPOLICY_SLOWEST);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5);
     curl_easy_setopt(curl, CURLOPT_HEADER, 0);
     curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 120);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 60);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
     curl_easy_setopt(curl, CURLOPT_VERBOSE, 0);
     return curl;
@@ -308,3 +309,38 @@ void Httpdestroy(Http *hh){
     free(hh);
 }
 
+
+static inline size_t min(size_t a, size_t b){
+   return a<b?a:b;
+}
+
+//顾名思义，将服务器传回的数据写到buff中
+size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
+{
+    buffstruct *bs = (buffstruct *) user_p;
+    if(bs->buf == NULL){
+        assert(bs->offset == 0);
+        assert(bs->len == 0);
+        bs->buf = (char*)calloc(1024, 1);
+        bs->len = 1024;
+    }
+    size_t len = size * nmemb;
+    if(bs->offset + len >= bs->len){
+        bs->len = ((bs->offset + len)&0xfffffffffc00)+1024;
+        bs->buf = (char*)realloc(bs->buf, bs->len);
+        memset(bs->buf + bs->offset, 0, bs->len - bs->offset);
+    }
+    memcpy(bs->buf + bs->offset, buffer, len);
+    bs->offset += len;
+    return len;
+}
+
+//你猜
+size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p)
+{
+    buffstruct *bs = (buffstruct *) user_p;
+    size_t len = min(size * nmemb, (bs->len) - (size_t)bs->offset);
+    memcpy(buffer, bs->buf + bs->offset, len);
+    bs->offset += len;
+    return len;
+}

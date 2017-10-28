@@ -16,24 +16,24 @@
 
 
 struct fblock{
+    uint32_t id;
     std::string name;
-#define BL_SYNCED  1
+#define BL_SYNCED  1    //已经读取到本地
 #define BL_DIRTY   2
 #define BL_TRANS   4
 #define BL_REOPEN  8
-#define BL_RETRY   16
     unsigned char flag = 0;
     time_t atime = time(0);
 };
 
 struct fcache{
     int fd;
-    size_t dirty = 0;
     pthread_mutex_t Lock;
     pthread_cond_t wait;
     std::map<uint32_t, fblock> chunks;
     std::map<uint32_t, task_t> taskid;
     std::set<std::string> droped;
+    std::set<fblock *> dirty;
     fcache();
     void lock();
     void unlock();
@@ -65,8 +65,7 @@ public:
     json_object *blocklist = nullptr;
     fcache* file = nullptr;
     dcache* dir = nullptr;
-#define SYNCED         1                        //是否已同步
-#define DIRTY          2                        //是否已修改
+#define SYNCED         1                        //是否已同步meta信息
 #define CHUNKED        4                        //分块文件,可写
 #define ENCRYPT        8                         //xor编码
     uint32_t flag = 0;
