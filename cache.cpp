@@ -151,18 +151,19 @@ void fcache::unlock(){
 
 
 int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
-    int oc = size / blksize; //原来的块数
-    int nc = offset / blksize;   //扩展后的块数
+    int oc = GetBlkNo(size, blksize); //原来的块数
+    int nc = GetBlkNo(offset, blksize);   //扩展后的块数
+
     if(size == (size_t)offset){
         return 0;
     }
     auto_lock l(&Lock);
     int ret = ftruncate(fd, offset);
-    int errno_save = errno;
     if(ret < 0){
-        return -errno_save;
+        return -errno;
     }
     if ((size_t)offset > size) {      //文件长度被扩展
+        assert(chunks[oc].flag & BL_SYNCED);
         if((chunks[oc].flag & BL_DIRTY) == 0){
             chunks[oc].flag |= BL_DIRTY;
             dirty.insert(&chunks[oc]);
@@ -177,6 +178,7 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
             chunks[i].flag |= BL_SYNCED;
         }
     }else{
+        assert(chunks[nc].flag & BL_SYNCED);
         if((chunks[nc].flag & BL_DIRTY) == 0){
             chunks[nc].flag |= BL_DIRTY;
             dirty.insert(&chunks[nc]);

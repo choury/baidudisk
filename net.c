@@ -217,7 +217,7 @@ CURLcode request(Http *r){
     curl_easy_setopt(r->curl_handle, CURLOPT_TIMEOUT, r->timeout);
     if(r->timeout > 60){
         curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_LIMIT, 5);
-        curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_TIME, 10);
+        curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_TIME, 30);
     }
     if(r->range){
         curl_easy_setopt(r->curl_handle, CURLOPT_RANGE, r->range);
