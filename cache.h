@@ -5,6 +5,7 @@
 #include <time.h>
 #include <map>
 #include <set>
+#include <list>
 #include <string>
 
 #include <json-c/json.h>
@@ -28,13 +29,14 @@ struct fblock{
 
 struct fcache{
     int fd;
+    uint32_t flag;                  //use CHUNKED and ENCRYPT from entry->flag
     pthread_mutex_t Lock;
     pthread_cond_t wait;
     std::map<uint32_t, fblock> chunks;
     std::map<uint32_t, task_t> taskid;
     std::set<std::string> droped;
     std::set<fblock *> dirty;
-    fcache();
+    fcache(uint32_t flag);
     void lock();
     void unlock();
     void synced(int bno, const char* path);
@@ -44,11 +46,12 @@ struct fcache{
     ~fcache();
 };
 
-struct inode_t;
+struct entry_t;
 
 struct dcache{
     pthread_mutex_t Lock;
-    std::map<std::string, inode_t*> entry;
+//    std::map<std::string, entry_t*> entrys;
+    std::list<entry_t *>entrys;
     std::map<std::string, task_t> taskid;
     dcache();
     void lock();
@@ -56,26 +59,30 @@ struct dcache{
     ~dcache();
 };
 
-struct inode_t {
+struct entry_t {
 private:
     pthread_mutex_t Lock;
 public:
     struct stat st;
-    struct inode_t* parent;
+    struct entry_t* parent;
+    std::string path;
     json_object *blocklist = nullptr;
     fcache* file = nullptr;
     dcache* dir = nullptr;
-#define SYNCED         1                        //是否已同步meta信息
-#define CHUNKED        4                        //分块文件,可写
-#define ENCRYPT        8                         //xor编码
+#define META_PULLED      1
+#define META_PUSHED      2
+#define GETCHILDREN      4
+#define CHUNKED           8                       //分块文件,可写
+#define ENCRYPT          16                       //xor编码
     uint32_t flag = 0;
     uint32_t opened = 0;
-    inode_t(inode_t* parent);
-    ~inode_t();
+    entry_t(entry_t* parent, std::string path);
+    ~entry_t();
     bool empty();
-    inode_t* add_entry(std::string path,const struct stat* st);
+    entry_t* add_entry(std::string path, const struct stat* st);
+    entry_t* add_entry(std::string path, entry_t* e);
     bool clear_cache();
-    inode_t* getnode(const std::string& path);
+    entry_t* getentry(const std::string& path);
     void move(const std::string& path);
     std::string getcwd();
     std::string getname();
@@ -83,8 +90,8 @@ public:
     int lock();
     int unlock();
     void remove();
+    void remove(std::string path);
     void release();
-    friend void inode_release(inode_t* node);
 };
 
 size_t GetBlkNo(size_t p, blksize_t blksize);
@@ -97,9 +104,9 @@ std::string encodepath(const std::string& path);
 std::string decodepath(const std::string& path);
 bool endwith(const std::string& s1, const std::string& s2);
 
-inode_t* getnode(const char *path);
+entry_t* getentry(const char *path);
 void cache_init();
-void cache_close(inode_t* node);
+void cache_close(entry_t* node);
 void cache_destory();
 
 

@@ -18,6 +18,7 @@ struct fuse_operations baidu_oper = {
     .fgetattr   = baidu_fgetattr,
     .opendir    = baidu_opendir,
     .readdir    = baidu_readdir,
+    .releasedir = baidu_releasedir,
     .mkdir      = baidu_mkdir,
     .unlink     = baidu_unlink,
     .rmdir      = baidu_rmdir,

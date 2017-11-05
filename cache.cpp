@@ -130,7 +130,7 @@ string decodepath(const string& path){
     return dirname(path)+Base64Decode(base.substr(0, base.length()-4).c_str());
 }
 
-fcache::fcache(){
+fcache::fcache(uint32_t flag): flag(flag){
     fd = tempfile();
     pthread_mutexattr_t mutexattr;
     pthread_mutexattr_init(&mutexattr);
@@ -294,9 +294,9 @@ dcache::~dcache(){
 }
 
 
-inode_t super_node(nullptr);
+entry_t super_node(nullptr, "");
 
-inode_t::inode_t(inode_t *parent):parent(parent){
+entry_t::entry_t(entry_t *parent, string path):parent(parent), path(path){
     memset(&st, 0, sizeof(st));
     pthread_mutexattr_t mutexattr;
     pthread_mutexattr_init(&mutexattr);
@@ -306,7 +306,7 @@ inode_t::inode_t(inode_t *parent):parent(parent){
     pthread_mutexattr_destroy(&mutexattr);
 }
 
-inode_t::~inode_t(){
+entry_t::~entry_t(){
     assert(empty());
     del_job((job_func)cache_close, this);
     pthread_mutex_destroy(&Lock);
@@ -317,75 +317,77 @@ inode_t::~inode_t(){
     delete file;
 }
 
-bool inode_t::empty(){
+bool entry_t::empty(){
     if(dir){
         assert(file == nullptr);
-        return dir->entry.empty();
+        return dir->entrys.empty();
     }
     return true;
 }
 
-inode_t* inode_t::add_entry(string path, const struct stat* st) {
+entry_t* entry_t::add_entry(string path, const struct stat* st) {
     assert(basename(path) == path);
-    assert(path != "." && path != "/");
+    assert(path != "." && path != "/" && path != "..");
+    entry_t* e = nullptr;
+    auto_lock l(&Lock);
     if(path == ""){
-        memcpy(&this->st, st, sizeof(struct stat));
-        return this;
-    }
-    inode_t* i = nullptr;
-    dir->lock();
-    if(dir->entry.count(path) && dir->entry[path]){
-        i = dir->entry[path];
-        if(i->dir){
-            memcpy(&i->st, st, sizeof(struct stat));
-            assert((i->flag & SYNCED) == 0);
-            assert(i->file == nullptr);
-        }
+        e = this;
     }else{
-        i = new inode_t(this);
-        memcpy(&i->st, st, sizeof(struct stat));
-        if(S_ISDIR(st->st_mode)){
-            i->dir = new dcache;
+        auto_lock _l(&dir->Lock);
+        for(auto d : dir->entrys){
+            if(d->path == path){
+                e = d;
+            }
         }
-        dir->entry[path] = i;
     }
-    dir->unlock();
-    return i;
+    if(e == nullptr){
+        e = new entry_t(this, path);
+        dir->entrys.push_back(e);
+    }
+    if(st){
+        memcpy(&e->st, st, sizeof(struct stat));
+        if(S_ISDIR(st->st_mode) && e->dir == nullptr){
+            e->dir = new dcache;
+        }
+        e->flag = META_PULLED | META_PUSHED;
+    }
+    return e;
 }
 
+entry_t * entry_t::add_entry(std::string path, entry_t* e) {
+    assert(basename(path) == path);
+    assert(path != "." && path != "/" && path != ".." && path != "");
+    auto_lock l(&Lock);
+    auto_lock _l(&dir->Lock);
+    dir->entrys.push_back(e);
+    e->parent = this;
+    return e;
+}
 
-bool inode_t::clear_cache(){
+bool entry_t::clear_cache(){
     auto_lock l(&Lock);
     if(dir){
         assert(file == nullptr);
-        for(auto i = dir->entry.begin(); i!= dir->entry.end();){
-            if(i->second == nullptr){
-                delete i->second;
-                i = dir->entry.erase(i);
-                continue;
-            }
-            if(i->second->clear_cache())
-            {
-                delete i->second;
-                i = dir->entry.erase(i);
+        for(auto i = dir->entrys.begin(); i!= dir->entrys.end();){
+            if((*i)->clear_cache()) {
+                delete *i;
+                i = dir->entrys.erase(i);
                 continue;
             }
             i++;
         }
-        flag &= ~SYNCED;
+        flag &= ~GETCHILDREN;
         return empty();
     }
     if(file){
         assert(dir == nullptr);
         cache_close(this);
-        flag &= ~SYNCED;
         return file == nullptr;
     }
-    flag &= ~SYNCED;
     return true;
 }
 
-inode_t* inode_t::getnode(const string& path) {
+entry_t* entry_t::getentry(const string& path) {
     auto_lock l(&Lock);
     if(path == "." || path == "/") {
         return this;
@@ -393,44 +395,39 @@ inode_t* inode_t::getnode(const string& path) {
         string subpath = subname(path);
         string child_name = childname(path);
         assert(file == nullptr);
-        if(dir->entry.count(child_name) == 0) {
-            return nullptr;
+        auto_lock _l(&dir->Lock);
+        for(auto d: dir->entrys){
+            if(d->path == child_name){
+                return d->getentry(subpath);
+            }
         }
-        return dir->entry[child_name]->getnode(subpath);
+        return nullptr;
     }
 }
 
-string inode_t::getname(){
-    inode_t* p = parent;
-    if(p == nullptr){
-        return "";
-    }
-    p->dir->lock();
-    for(auto i:p->dir->entry){
-        if(i.second == this){
-            p->dir->unlock();
-            return i.first;
-        }
-    }
-    p->dir->unlock();
-    assert(0);
-    return "";
-}
-
-string inode_t::getcwd(){
-    string path = getname();
-    if(flag & CHUNKED){
-        assert(S_ISREG(st.st_mode));
-        path = encodepath(path);
-    }
-    inode_t* p = this;
-    while((p = p->parent)){
-        path = p->getname() +"/"+ path;
-    }
+string entry_t::getname(){
     return path;
 }
 
-void inode_t::filldir(void *buff, fuse_fill_dir_t filler){
+string entry_t::getcwd(){
+    string path;
+    if(flag & CHUNKED){
+        assert((flag & META_PULLED)== 0 || S_ISREG(st.st_mode));
+        path = encodepath(this->path);
+    }else{
+        path = this->path;
+    }
+    entry_t* p = this;
+    while((p = p->parent)){
+        path = p->getname() +"/"+ path;
+    }
+    if(path == "")
+        return "/";
+    else
+        return path;
+}
+
+void entry_t::filldir(void *buff, fuse_fill_dir_t filler){
     assert(file == nullptr);
     filler(buff, ".", &st, 0);
     if(parent == nullptr){
@@ -440,26 +437,32 @@ void inode_t::filldir(void *buff, fuse_fill_dir_t filler){
         filler(buff, "..", &parent->st, 0);
     }
     dir->lock();
-    for (auto i : dir->entry) {
-        if(i.second){
-            filler(buff, i.first.c_str(), &i.second->st, 0);
-        }else{
-            filler(buff, i.first.c_str(), nullptr, 0);
-        }
+    for (auto i : dir->entrys) {
+        filler(buff, i->path.c_str(), &i->st, 0);
     }
     dir->unlock();
 }
 
-void inode_t::remove(){
+void entry_t::remove(std::string path){
+    auto_lock l(&Lock);
+    auto_lock _l(&dir->Lock);
+    for(auto i = dir->entrys.begin(); i!= dir->entrys.end(); i++){
+        if((*i)->path == path) {
+            dir->entrys.erase(i);
+            return;
+        }
+    }
+}
+
+void entry_t::remove(){
     lock();
-    inode_t* p = parent;
-    p->dir->entry.erase(getname());
+    parent->remove(path);
     if(file == nullptr){
         assert(empty()); //only ".."
         delete this;
         return;
     }else if(opened == 0){
-        assert(flag & SYNCED);
+        assert(flag & META_PUSHED);
         delete this;
         return;
     }else{
@@ -470,12 +473,12 @@ void inode_t::remove(){
 }
 
 
-void inode_t::release(){
+void entry_t::release(){
     lock();
     assert(file);
     opened--;
     if(opened == 0){
-        assert(flag & SYNCED);
+        assert(flag & META_PUSHED);
         del_job((job_func)filesync, this);
         if( st.st_nlink == 0){
             delete this;
@@ -487,31 +490,29 @@ void inode_t::release(){
     unlock();
 }
 
-void inode_t::move(const string& path){
-    inode_t* p = super_node.getnode(dirname(path));
+void entry_t::move(const string& path){
+    entry_t* p = super_node.getentry(dirname(path));
     auto_lock l(&Lock);
-    parent->dir->entry.erase(getname());
-    assert(p->dir->entry.count(basename(path)) == 0);
-    p->dir->entry[basename(path)] = this;
-    parent = p;
+    parent->remove(path);
+    p->add_entry(path, this);
 }
 
-int inode_t::lock(){
+int entry_t::lock(){
     return pthread_mutex_lock(&Lock);
 }
 
-int inode_t::unlock(){
+int entry_t::unlock(){
     return pthread_mutex_unlock(&Lock);
 }
 
-inode_t* getnode(const char *path){
+entry_t* getentry(const char *path){
     super_node.lock();
-    inode_t* node = super_node.getnode(path);
-    if(node){
-        node->lock();
+    entry_t* entry = super_node.getentry(path);
+    if(entry){
+        entry->lock();
     }
     super_node.unlock();
-    return node;
+    return entry;
 }
 
 void cache_init(){
@@ -520,14 +521,16 @@ void cache_init(){
     super_node.unlock();
 }
 
-void cache_close(inode_t* node){
+void cache_close(entry_t* node){
     node->lock();
     if(node->opened == 0){
-        assert(node->flag & SYNCED );
+        assert(node->flag & META_PUSHED);
         assert(node->file);
         delete node->file;
         node->file = nullptr;
     }
+    node->flag &= ~META_PULLED;
+    node->flag &= ~META_PUSHED;
     del_job((job_func)cache_close, node);
     node->unlock();
     return;

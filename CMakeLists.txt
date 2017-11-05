@@ -4,7 +4,10 @@ add_executable(baidudisk cache.cpp net.c utils.cpp baiduapi.cpp threadpool.cpp j
 
 install(TARGETS baidudisk RUNTIME DESTINATION bin)
 
-set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -ggdb -O0 ")
-set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64 -std=c++11 -Wall -ggdb -O0 ")
+set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -ggdb -O0 -fsanitize=address -fsanitize=undefined")
+set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64 -std=c++11 -Wall -ggdb -O0 -fsanitize=address -fsanitize=undefined")
+
+#set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -O3 -DNDEBUG -g")
+#set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64 -std=c++11 -Wall -O3 -DNDEBUG -g")
 
 target_link_libraries(baidudisk json-c fuse ssl crypto pthread curl)

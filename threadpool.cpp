@@ -113,8 +113,15 @@ task_t addtask(taskfunc task, void *param , uint flags) {
     t->flags = flags;
     pthread_mutex_init(&t->lock ,NULL);
     pthread_mutex_lock(&t->lock);
-    pthread_mutex_lock(&poollock);
 
+    valnode *val = (valnode *)malloc(sizeof(valnode));
+    val->done = 0;
+    val->waitc = 0;
+    val->val = nullptr;
+    val->cond=PTHREAD_COND_INITIALIZER;
+
+    pthread_mutex_lock(&poollock);
+    t->taskid = pool.curid++;
     if (pool.taskhead == NULL) {                              //加入任务队列尾部
         pool.taskhead = pool.tasktail = t;
     } else {
@@ -122,19 +129,12 @@ task_t addtask(taskfunc task, void *param , uint flags) {
         pool.tasktail = t;
     }
 
-    pthread_mutex_unlock(&poollock);
-
-    valnode *val = (valnode *)malloc(sizeof(valnode));
-    val->done = 0;
-    val->waitc = 0;
-    val->val = nullptr;
-    val->cond=PTHREAD_COND_INITIALIZER;  
     pthread_mutex_lock(&vallock);
-    t->taskid = pool.curid++;
     valmap[t->taskid] = val;
     assert(val);
     pthread_mutex_unlock(&vallock);
     
+    pthread_mutex_unlock(&poollock);
     sem_post(&tasksum);                                       //发信号给调度线程
     if(flags & WAIT){
         pthread_mutex_lock(&t->lock);

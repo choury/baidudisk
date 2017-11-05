@@ -10,7 +10,7 @@
  * 
  */
 
-struct inode_t;
+struct entry_t;
 
 #ifdef  __cplusplus
 extern "C" {
@@ -22,7 +22,7 @@ extern char confpath[];
 
 int gettoken();
 int refreshtoken();
-int filesync(struct inode_t* node);
+int filesync(struct entry_t* node);
 
 void *baidu_init (struct fuse_conn_info *conn);
 void baidu_destroy (void *);
@@ -31,6 +31,7 @@ int baidu_statfs(const char *path , struct statvfs * sf);
 int baidu_opendir(const char *path, struct fuse_file_info *fi);
 int baidu_getattr ( const char *path, struct stat *stbuf );
 int baidu_readdir(const char *path, void *buf, fuse_fill_dir_t filler,off_t offset, struct fuse_file_info *fi);
+int baidu_releasedir(const char* , struct fuse_file_info *fi);
 
 int baidu_access(const char *path, int mode);
 int baidu_open(const char *path, struct fuse_file_info *fi);
