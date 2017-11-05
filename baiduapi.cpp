@@ -876,7 +876,7 @@ int baidu_mkdir(const char *path, mode_t mode) {
     json_object_put(json_get);
     
     entry_t *entry = getentry(dirname(path).c_str());
-    entry->add_entry(basename(path), &st)->flag = GETCHILDREN;
+    entry->add_entry(basename(path), &st)->flag = META_PULLED | META_PUSHED | GETCHILDREN;
     entry->unlock();
     return 0;
 }

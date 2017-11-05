@@ -361,6 +361,7 @@ entry_t * entry_t::add_entry(std::string path, entry_t* e) {
     auto_lock _l(&dir->Lock);
     dir->entrys.push_back(e);
     e->parent = this;
+    e->path = path;
     return e;
 }
 
@@ -491,10 +492,12 @@ void entry_t::release(){
 }
 
 void entry_t::move(const string& path){
-    entry_t* p = super_node.getentry(dirname(path));
+    string dname = dirname(path);
+    string bname = basename(path);
+    entry_t* p = super_node.getentry(dname);
     auto_lock l(&Lock);
-    parent->remove(path);
-    p->add_entry(path, this);
+    parent->remove(this->path);
+    p->add_entry(bname, this);
 }
 
 int entry_t::lock(){
