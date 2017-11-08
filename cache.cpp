@@ -163,42 +163,41 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
         return -errno;
     }
     if ((size_t)offset > size) {      //文件长度被扩展
-        assert(chunks[oc].flag & BL_SYNCED);
-        if((chunks[oc].flag & BL_DIRTY) == 0){
-            chunks[oc].flag |= BL_DIRTY;
-            dirty.insert(&chunks[oc]);
+        assert(chunks[oc]->flag & BL_SYNCED);
+        if((chunks[oc]->flag & BL_DIRTY) == 0){
+            chunks[oc]->flag |= BL_DIRTY;
+            dirty.insert(chunks[oc]);
         }
-        if(chunks[oc].flag & BL_TRANS) {
-            chunks[oc].flag |= BL_REOPEN;
+        if(chunks[oc]->flag & BL_TRANS) {
+            chunks[oc]->flag |= BL_REOPEN;
         }
         for(int i=oc+1; i<=nc; ++i){
             assert(chunks.count(i) == 0);
-            chunks[i].id = i;
-            chunks[i].name = "x";
-            chunks[i].flag |= BL_SYNCED;
+            chunks[i] = new fblock(i, BL_SYNCED, "x");
         }
     }else{
-        assert(chunks[nc].flag & BL_SYNCED);
-        if((chunks[nc].flag & BL_DIRTY) == 0){
-            chunks[nc].flag |= BL_DIRTY;
-            dirty.insert(&chunks[nc]);
+        assert(chunks[nc]->flag & BL_SYNCED);
+        if((chunks[nc]->flag & BL_DIRTY) == 0){
+            chunks[nc]->flag |= BL_DIRTY;
+            dirty.insert(chunks[nc]);
         }
-        if(chunks[nc].flag & BL_TRANS) {
-            chunks[nc].flag |= BL_REOPEN;
+        if(chunks[nc]->flag & BL_TRANS) {
+            chunks[nc]->flag |= BL_REOPEN;
         }
         for(int i=nc+1; i<=oc; ++i){
             //truncate 掉的就不需要再上传了
-            if(chunks[i].flag & BL_DIRTY){
-                dirty.erase(&chunks[i]);
+            if(chunks[i]->flag & BL_DIRTY){
+                dirty.erase(chunks[i]);
                 pthread_cond_signal(&wait);
             }
-            if(chunks[i].name[0]){
-                droped.insert(chunks[i].name);
+            if(chunks[i]->name[0]){
+                droped.insert(chunks[i]->name);
             }
+            delete chunks[i];
             chunks.erase(i);
         }
     }
-    chunks[nc].atime = time(0);
+    chunks[nc]->atime = time(0);
     return ret;
 }
 
@@ -210,18 +209,18 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
         pthread_cond_wait(&wait, &Lock);
     }
     assert(chunks.count(c));
-    fblock& fb = chunks[c];
-    if((fb.flag & BL_DIRTY) == 0){
-        fb.flag |= BL_DIRTY;
-        fb.flag |= BL_SYNCED;
-        dirty.insert(&fb);
+    fblock* fb = chunks[c];
+    if((fb->flag & BL_DIRTY) == 0){
+        fb->flag |= BL_DIRTY;
+        fb->flag |= BL_SYNCED;
+        dirty.insert(fb);
     }
-    if(fb.flag & BL_TRANS) {
-        fb.flag |= BL_REOPEN;
+    if(fb->flag & BL_TRANS) {
+        fb->flag |= BL_REOPEN;
     }
     ssize_t ret = pwrite(fd, buff, size, offset);
     int errno_save = errno;
-    fb.atime = time(0);
+    fb->atime = time(0);
     if(ret < 0){
         return -errno_save;
     }
@@ -233,12 +232,12 @@ ssize_t fcache::read(void* buff, size_t size, off_t offset, blksize_t blksize) {
     size_t c = offset / blksize;
     lock();
     assert(chunks.count(c));
-    fblock& fb = chunks[c];
-    assert(fb.flag & BL_SYNCED);
+    fblock* fb = chunks[c];
+    assert(fb->flag & BL_SYNCED);
     size_t len = std::min(size, GetBlkEndPointFromP(offset, blksize) - (size_t)offset);      //计算最长能读取的字节
     ssize_t ret = pread(fd, buff, len, offset);
     int errno_save = errno;
-    fb.atime = time(0);
+    fb->atime = time(0);
     unlock();
     if (ret < 0) {                   //读取出错了
         return -errno_save;
@@ -251,15 +250,15 @@ void fcache::synced(int bno, const char* path) {
     assert(path);
     auto_lock l(&Lock);
     if(chunks.count(bno) &&
-       (chunks[bno].flag & BL_REOPEN) == 0)
+       (chunks[bno]->flag & BL_REOPEN) == 0)
     {
-        if(chunks[bno].name[0] && chunks[bno].name != "x"){
-            droped.insert(chunks[bno].name);
+        if(chunks[bno]->name[0] && chunks[bno]->name != "x"){
+            droped.insert(chunks[bno]->name);
         }
-        chunks[bno].name = path;
-        chunks[bno].flag &= ~BL_DIRTY;
-        assert(dirty.count(&chunks[bno]));
-        dirty.erase(&chunks[bno]);
+        chunks[bno]->name = path;
+        chunks[bno]->flag &= ~BL_DIRTY;
+        assert(dirty.count(chunks[bno]));
+        dirty.erase(chunks[bno]);
         pthread_cond_signal(&wait);
     }else{
         droped.insert(path);
@@ -270,6 +269,9 @@ fcache::~fcache(){
     close(fd);
     pthread_mutex_destroy(&Lock);
     pthread_cond_destroy(&wait);
+    for(auto fb : chunks){
+        delete fb.second;
+    }
 }
 
 dcache::dcache(){
@@ -532,8 +534,6 @@ void cache_close(entry_t* node){
         delete node->file;
         node->file = nullptr;
     }
-    node->flag &= ~META_PULLED;
-    node->flag &= ~META_PUSHED;
     del_job((job_func)cache_close, node);
     node->unlock();
     return;

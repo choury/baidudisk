@@ -25,6 +25,7 @@ struct fblock{
 #define BL_REOPEN  8
     unsigned char flag = 0;
     time_t atime = time(0);
+    fblock(uint32_t id, unsigned char flag, std::string name=""):id(id),name(name), flag(flag){}
 };
 
 struct fcache{
@@ -32,7 +33,7 @@ struct fcache{
     uint32_t flag;                  //use CHUNKED and ENCRYPT from entry->flag
     pthread_mutex_t Lock;
     pthread_cond_t wait;
-    std::map<uint32_t, fblock> chunks;
+    std::map<uint32_t, fblock*> chunks;
     std::map<uint32_t, task_t> taskid;
     std::set<std::string> droped;
     std::set<fblock *> dirty;

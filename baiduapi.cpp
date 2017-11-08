@@ -197,11 +197,11 @@ void readblock(block_param *bp) {
         assert(bs.offset <= (size_t)param.blksize);
     }while(0);
     param.file->lock();
-    if(ret == 0 && (param.file->chunks[param.bno].flag & BL_SYNCED) == 0){
+    if(ret == 0 && (param.file->chunks[param.bno]->flag & BL_SYNCED) == 0){
         if(param.file->flag & ENCRYPT)
             xorcode(bs.buf, startp, bs.offset, ak);
         pwrite(param.file->fd, bs.buf, bs.offset, startp);
-        param.file->chunks[param.bno].flag |= BL_SYNCED;
+        param.file->chunks[param.bno]->flag |= BL_SYNCED;
     }
     param.file->taskid.erase(param.bno);
     param.file->unlock();
@@ -238,9 +238,9 @@ void uploadblock(block_param *bp) {
             ret = ENOENT;
             break;
         }
-        assert(param.file->chunks[param.bno].flag & BL_DIRTY);
-        assert((param.file->chunks[param.bno].flag & BL_TRANS) == 0);
-        param.file->chunks[param.bno].flag |= BL_TRANS;
+        assert(param.file->chunks[param.bno]->flag & BL_DIRTY);
+        assert((param.file->chunks[param.bno]->flag & BL_TRANS) == 0);
+        param.file->chunks[param.bno]->flag |= BL_TRANS;
         read_bs.len = pread(param.file->fd, read_bs.buf, read_bs.len, param.bno*param.blksize);
         if(param.file->flag & ENCRYPT)
             xorcode(read_bs.buf, param.bno * param.blksize, read_bs.len, ak);
@@ -288,8 +288,8 @@ void uploadblock(block_param *bp) {
         }
     }while(0);
     param.file->lock();
-    param.file->chunks[param.bno].flag &= ~BL_REOPEN;
-    param.file->chunks[param.bno].flag &= ~BL_TRANS;
+    param.file->chunks[param.bno]->flag &= ~BL_REOPEN;
+    param.file->chunks[param.bno]->flag &= ~BL_TRANS;
     param.file->taskid.erase(param.bno);
     param.file->unlock();
     free(read_bs.buf);
@@ -297,6 +297,7 @@ void uploadblock(block_param *bp) {
 
 int readchunkattr(entry_t *entry) {
     entry->lock();
+    assert(entry->flag & CHUNKED);
     assert(endwith(entry->path, ".def") == 0);
     char buff[2048];
     char fullpath[PATHLEN];
@@ -1094,9 +1095,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     i->flag = META_PULLED | CHUNKED | ENCRYPT;
 
     i->file = new fcache(i->flag);
-    i->file->chunks[0].id = 0;
-    i->file->chunks[0].name = "x";
-    i->file->chunks[0].flag = BL_SYNCED;
+    i->file->chunks[0] = new fblock(0, BL_SYNCED, "x");
 
 
     fi->fh = (uint64_t)i;
@@ -1141,11 +1140,16 @@ int baidu_open(const char *path, struct fuse_file_info *fi) {
     if(entry->blocklist){
         for (int i = 0; i < json_object_array_length(entry->blocklist); ++i) {
             json_object *block = json_object_array_get_idx(entry->blocklist, i);
-            entry->file->chunks[i].id = i;
-            entry->file->chunks[i].name = json_object_get_string(block);
-            if(entry->file->chunks[i].name == "x"){
-                entry->file->chunks[i].flag |= BL_SYNCED;
+            const char*  name = json_object_get_string(block);
+            if(name[0] == 'x'){
+                entry->file->chunks[i] = new fblock(i, BL_SYNCED, name);
+            }else{
+                entry->file->chunks[i] = new fblock(i, 0, name);
             }
+        }
+    }else{
+        for(size_t i = 0; i <= GetBlkNo(entry->st.st_size, entry->st.st_blksize); i++){
+            entry->file->chunks[i] = new fblock(i, 0);
         }
     }
     entry->opened = 1;
@@ -1159,14 +1163,14 @@ int baidu_open(const char *path, struct fuse_file_info *fi) {
 static bool baidu_download_chunk(fcache *file, std::string path, size_t c, size_t blksize, bool wait){
     file->lock();
     assert(file->chunks.count(c));
-    fblock& fb = file->chunks[c];
-    if(file->taskid.count(c) == 0 && (fb.flag & BL_SYNCED) == 0) {
+    fblock* fb = file->chunks[c];
+    if(file->taskid.count(c) == 0 && (fb->flag & BL_SYNCED) == 0) {
         block_param *b = (block_param *) malloc(sizeof(block_param));
         b->file = file;
         b->bno = c;
         b->blksize = blksize;
         if(file->flag & CHUNKED){
-            sprintf(b->path, "%s/%s", path.c_str(), fb.name.c_str());
+            sprintf(b->path, "%s/%s", path.c_str(), fb->name.c_str());
         }else{
             strcpy(b->path, path.c_str());
         }
@@ -1182,7 +1186,7 @@ static bool baidu_download_chunk(fcache *file, std::string path, size_t c, size_
         file->lock();
     }
     file->unlock();
-    return fb.flag & BL_SYNCED;
+    return fb->flag & BL_SYNCED;
 }
 
 int baidu_read_e(entry_t* entry, char *buf, size_t size, off_t offset){
@@ -1264,7 +1268,7 @@ int baidu_ftruncate_e(entry_t* entry, off_t offset){
     bool synced = true;
     int c = GetBlkNo(begin, blksize);
     if(begin % blksize == 0){
-        entry->file->chunks[c].flag |= BL_SYNCED;
+        entry->file->chunks[c]->flag |= BL_SYNCED;
     }else{
         synced = baidu_download_chunk(entry->file, entry->getcwd(), c, blksize, true);
     }
@@ -1316,13 +1320,12 @@ int baidu_write_e(entry_t* entry, const char *buf, size_t size, off_t offset){
     entry->unlock();
 
     if(file->chunks.count(c) == 0){
-        file->chunks[c].id = c;
-        file->chunks[c].flag =  BL_SYNCED;
+        file->chunks[c] = new fblock(c, BL_SYNCED);
     }
     auto& fb = file->chunks[c];
     if(offset % blksize == 0  && size >= (size_t)blksize){
         //这里写入整个块，可以不同步，直接写入
-        fb.flag |= BL_SYNCED;
+        fb->flag |= BL_SYNCED;
     }
     file->unlock();
     bool synced = baidu_download_chunk(file, path, c, blksize, true);
@@ -1502,10 +1505,10 @@ wait:
         }
         entry->blocklist = json_object_new_array();
         for (size_t i = 0; i <= GetBlkNo(entry->st.st_size, entry->st.st_blksize); ++i) {
-            assert((entry->file->chunks[i].flag & BL_DIRTY) == 0);
-            json_object_array_add(entry->blocklist, json_object_new_string(entry->file->chunks[i].name.c_str()));
+            assert((entry->file->chunks[i]->flag & BL_DIRTY) == 0);
+            json_object_array_add(entry->blocklist, json_object_new_string(entry->file->chunks[i]->name.c_str()));
         }
-        while (baidu_updatemeta(entry));
+        while(baidu_updatemeta(entry));
         entry->flag |= META_PUSHED;
     }
     entry->file->unlock();
