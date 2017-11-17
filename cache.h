@@ -3,6 +3,7 @@
 
 #include "threadpool.h"
 #include <time.h>
+#include <semaphore.h>
 #include <map>
 #include <set>
 #include <list>
@@ -28,15 +29,29 @@ struct fblock{
     fblock(uint32_t id, unsigned char flag, std::string name=""):id(id),name(name), flag(flag){}
 };
 
+struct DirtyBlock{
+private:
+    sem_t cachec;
+    std::set<fblock *> dirty;
+public:
+    DirtyBlock();
+    ~DirtyBlock();
+    void insert(fblock *);
+    void erase(fblock *);
+    size_t count(fblock *);
+    size_t size();
+    std::set<fblock *>::iterator begin();
+    std::set<fblock *>::iterator end();
+};
+
 struct fcache{
     int fd;
     uint32_t flag;                  //use CHUNKED and ENCRYPT from entry->flag
     pthread_mutex_t Lock;
-    pthread_cond_t wait;
     std::map<uint32_t, fblock*> chunks;
     std::map<uint32_t, task_t> taskid;
     std::set<std::string> droped;
-    std::set<fblock *> dirty;
+    DirtyBlock dirty;
     fcache(uint32_t flag);
     void lock();
     void unlock();

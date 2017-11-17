@@ -12,6 +12,8 @@
 
 using namespace std;
 
+sem_t global_cachec;
+
 class auto_lock {
     pthread_mutex_t* l;
 public:
@@ -130,6 +132,48 @@ string decodepath(const string& path){
     return dirname(path)+Base64Decode(base.substr(0, base.length()-4).c_str());
 }
 
+DirtyBlock::DirtyBlock(){
+    sem_init(&cachec, 0 , CACHEC);
+}
+
+DirtyBlock::~DirtyBlock(){
+    sem_destroy(&cachec);
+}
+
+void DirtyBlock::insert(fblock* fb){
+    if(dirty.count(fb)){
+        return;
+    }
+    sem_wait(&global_cachec);
+    sem_wait(&cachec);
+    dirty.insert(fb);
+}
+
+void DirtyBlock::erase(fblock* fb){
+    if(!dirty.count(fb)){
+        return;
+    }
+    sem_post(&global_cachec);
+    sem_post(&cachec);
+    dirty.erase(fb);
+}
+
+size_t DirtyBlock::count(fblock* fb){
+    return dirty.count(fb);
+}
+
+size_t DirtyBlock::size(){
+    return dirty.size();
+}
+
+std::set<fblock *>::iterator DirtyBlock::begin(){
+    return dirty.begin();
+}
+
+std::set<fblock *>::iterator DirtyBlock::end(){
+    return dirty.end();
+}
+
 fcache::fcache(uint32_t flag): flag(flag){
     fd = tempfile();
     pthread_mutexattr_t mutexattr;
@@ -138,7 +182,6 @@ fcache::fcache(uint32_t flag): flag(flag){
                               PTHREAD_MUTEX_RECURSIVE_NP);
     pthread_mutex_init(&Lock, &mutexattr);    //每个临时文件都有一把锁，操作它时如果不能确定没有其他线程也操作它就应该上锁，好多锁啊，真头疼
     pthread_mutexattr_destroy(&mutexattr);
-    pthread_cond_init(&wait, 0);
 }
 
 void fcache::lock(){
@@ -188,7 +231,6 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
             //truncate 掉的就不需要再上传了
             if(chunks[i]->flag & BL_DIRTY){
                 dirty.erase(chunks[i]);
-                pthread_cond_signal(&wait);
             }
             if(chunks[i]->name[0]){
                 droped.insert(chunks[i]->name);
@@ -205,9 +247,6 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
     assert(size <= (size_t)blksize);
     auto_lock l(&Lock);
     size_t c = offset / blksize;
-    while(dirty.size() >= CACHEC) {
-        pthread_cond_wait(&wait, &Lock);
-    }
     assert(chunks.count(c));
     fblock* fb = chunks[c];
     if((fb->flag & BL_DIRTY) == 0){
@@ -259,7 +298,6 @@ void fcache::synced(int bno, const char* path) {
         chunks[bno]->flag &= ~BL_DIRTY;
         assert(dirty.count(chunks[bno]));
         dirty.erase(chunks[bno]);
-        pthread_cond_signal(&wait);
     }else{
         droped.insert(path);
     }
@@ -268,7 +306,6 @@ void fcache::synced(int bno, const char* path) {
 fcache::~fcache(){
     close(fd);
     pthread_mutex_destroy(&Lock);
-    pthread_cond_destroy(&wait);
     for(auto fb : chunks){
         delete fb.second;
     }
@@ -521,6 +558,7 @@ entry_t* getentry(const char *path){
 }
 
 void cache_init(){
+    sem_init(&global_cachec, 0, 2 * CACHEC);
     super_node.lock();
     super_node.dir = new dcache;
     super_node.unlock();
@@ -543,5 +581,6 @@ void cache_destory() {
     super_node.lock();
     super_node.clear_cache();
     super_node.unlock();
+    sem_destroy(&global_cachec);
 }
 

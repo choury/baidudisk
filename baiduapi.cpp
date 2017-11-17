@@ -759,14 +759,14 @@ int baidu_getattr(const char *path, struct stat *st) {
         entry->unlock();
         return 0;
     }
-    if(readchunkattr(entry) == 0){
+
+    int ret = readchunkattr(entry);
+    if( ret == 0){
         assert(entry->flag & META_PULLED);
         memcpy(st, &entry->st, sizeof(struct stat));
-        entry->unlock();
-        return 0;
     }
     entry->unlock();
-    return -EAGAIN;
+    return ret;
 }
 
 
