@@ -428,7 +428,6 @@ bool entry_t::clear_cache(){
 }
 
 entry_t* entry_t::getentry(const string& path) {
-    auto_lock l(&Lock);
     if(path == "." || path == "/") {
         return this;
     } else {
@@ -438,9 +437,12 @@ entry_t* entry_t::getentry(const string& path) {
         auto_lock _l(&dir->Lock);
         for(auto d: dir->entrys){
             if(d->path == child_name){
+                d->lock();
+                this->unlock();
                 return d->getentry(subpath);
             }
         }
+        this->unlock();
         return nullptr;
     }
 }
@@ -516,7 +518,6 @@ void entry_t::remove(){
 void entry_t::release(){
     lock();
     assert(file);
-    opened--;
     if(opened == 0){
         assert(flag & META_PUSHED);
         del_job((job_func)filesync, this);
@@ -533,10 +534,11 @@ void entry_t::release(){
 void entry_t::move(const string& path){
     string dname = dirname(path);
     string bname = basename(path);
-    entry_t* p = super_node.getentry(dname);
     auto_lock l(&Lock);
     parent->remove(this->path);
+    entry_t* p = ::getentry(dname.c_str());
     p->add_entry(bname, this);
+    p->unlock();
 }
 
 int entry_t::lock(){
@@ -548,13 +550,12 @@ int entry_t::unlock(){
 }
 
 entry_t* getentry(const char *path){
-    super_node.lock();
-    entry_t* entry = super_node.getentry(path);
-    if(entry){
-        entry->lock();
-    }
-    super_node.unlock();
-    return entry;
+    return getentryAt(&super_node, path);
+}
+
+entry_t* getentryAt(entry_t* parent, const std::string& path){
+    parent->lock();
+    return parent->getentry(path);
 }
 
 void cache_init(){

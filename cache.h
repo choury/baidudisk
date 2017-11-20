@@ -121,6 +121,7 @@ std::string decodepath(const std::string& path);
 bool endwith(const std::string& s1, const std::string& s2);
 
 entry_t* getentry(const char *path);
+entry_t* getentryAt(entry_t* parent, const std::string& path);
 void cache_init();
 void cache_close(entry_t* node);
 void cache_destory();

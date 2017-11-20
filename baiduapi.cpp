@@ -639,7 +639,7 @@ int baidu_opendir_e(entry_t* entry){
         if(endwith(bpath, ".def")){
             std::string realpath = decodepath(bpath);
             std::string bname = basename(realpath);
-            entry_t* e = entry->getentry(bname);
+            entry_t* e = getentryAt(entry, bname);
             if(!e){
                 e = entry->add_entry(bname, (struct stat*)nullptr);
             }
@@ -729,7 +729,7 @@ int baidu_getattr(const char *path, struct stat *st) {
     if(pentry == nullptr){
         return -ENOENT;
     }
-    entry_t* entry = pentry->getentry(bname);
+    entry_t* entry = getentryAt(pentry, bname);
     if(entry == nullptr){
         if(pentry->flag & GETCHILDREN){
             pentry->unlock();
@@ -737,7 +737,7 @@ int baidu_getattr(const char *path, struct stat *st) {
         }
         baidu_opendir_e(pentry);
         baidu_relasedir_e(pentry);
-        entry = pentry->getentry(bname);
+        entry = getentryAt(pentry, bname);
         if(entry == nullptr){
             pentry->unlock();
             return -ENOENT;
@@ -753,7 +753,6 @@ int baidu_getattr(const char *path, struct stat *st) {
     }
     pentry->dir->unlock();
     pentry->unlock();
-    entry->lock();
     if(entry->flag & META_PULLED){
         memcpy(st, &entry->st, sizeof(struct stat));
         entry->unlock();
@@ -1183,21 +1182,24 @@ static bool baidu_download_chunk(fcache *file, std::string path, size_t c, size_
         }
         file->unlock();
         waittask(taskid);
-        file->lock();
+    }else{
+        file->unlock();
     }
-    file->unlock();
     return fb->flag & BL_SYNCED;
 }
 
 int baidu_read_e(entry_t* entry, char *buf, size_t size, off_t offset){
     assert(entry->file);
-    if (offset > entry->st.st_size) {        //如果偏移超过文件长度
+    if(offset > entry->st.st_size) {        //如果偏移超过文件长度
         errno = EFAULT;
         return -errno;
     }
 
-    if (offset + size > (size_t)entry->st.st_size) {   //如果剩余长度不足size，则最多读到文件末尾
+    if(offset + size > (size_t)entry->st.st_size) {   //如果剩余长度不足size，则最多读到文件末尾
         size = entry->st.st_size - offset;
+    }
+    if(size == 0){
+        return 0;
     }
     blksize_t blksize = entry->st.st_blksize;
     std::string path = entry->getcwd();
@@ -1472,21 +1474,12 @@ int baidu_updatemeta(entry_t *entry){
 }
 
 
-int filesync(entry_t *entry, int sync_all){
+int filesync(entry_t *entry, int release){
     entry->lock();
     if(entry->file == nullptr){
         entry->flag |= META_PUSHED;
         entry->unlock();
         return 0;
-    }
-    entry->file->lock();
-wait:
-    while(sync_all && entry->file->taskid.size()){
-        auto i = entry->file->taskid.begin();
-        task_t taskid = i->second;
-        entry->file->unlock();
-        waittask(taskid);
-        entry->file->lock();
     }
     if(entry->st.st_nlink == 0){
         entry->flag |= META_PUSHED;
@@ -1494,25 +1487,42 @@ wait:
         entry->unlock();
         return 0;
     }
+    entry->file->lock();
+    entry->unlock();
+wait:
+    while(release && entry->file->taskid.size()){
+        auto i = entry->file->taskid.begin();
+        task_t taskid = i->second;
+        entry->file->unlock();
+        waittask(taskid);
+        entry->file->lock();
+    }
+
     if(entry->file->dirty.size()){
         assert(entry->flag & CHUNKED);
         baidu_upload_chunk(entry, true);
-        if(sync_all)
+        if(release)
             goto wait;
-    }else if((entry->flag & META_PUSHED) == 0){
-        if(entry->blocklist){
-            json_object_put(entry->blocklist);
+    }else {
+        entry->lock();
+        if((entry->flag & META_PUSHED) == 0){
+            if(entry->blocklist){
+                json_object_put(entry->blocklist);
+            }
+            entry->blocklist = json_object_new_array();
+            for (size_t i = 0; i <= GetBlkNo(entry->st.st_size, entry->st.st_blksize); ++i) {
+                assert((entry->file->chunks[i]->flag & BL_DIRTY) == 0);
+                json_object_array_add(entry->blocklist, json_object_new_string(entry->file->chunks[i]->name.c_str()));
+            }
+            while(baidu_updatemeta(entry));
+            entry->flag |= META_PUSHED;
         }
-        entry->blocklist = json_object_new_array();
-        for (size_t i = 0; i <= GetBlkNo(entry->st.st_size, entry->st.st_blksize); ++i) {
-            assert((entry->file->chunks[i]->flag & BL_DIRTY) == 0);
-            json_object_array_add(entry->blocklist, json_object_new_string(entry->file->chunks[i]->name.c_str()));
+        if(release){
+            entry->opened -- ;
         }
-        while(baidu_updatemeta(entry));
-        entry->flag |= META_PUSHED;
+        entry->unlock();
     }
     entry->file->unlock();
-    entry->unlock();
     return 0;
 }
 
@@ -1523,7 +1533,7 @@ int filesync(entry_t *node){
 
 int baidu_fsync(const char *path, int flag, struct fuse_file_info *fi) {
     entry_t *node = (entry_t *) fi->fh;
-    return filesync(node, flag);
+    return filesync(node, 0);
 }
 
 
