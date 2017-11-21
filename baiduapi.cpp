@@ -1205,12 +1205,14 @@ int baidu_read_e(entry_t* entry, char *buf, size_t size, off_t offset){
     std::string path = entry->getcwd();
     int c = offset / blksize;  //计算一下在哪个块
     fcache* file = entry->file;
+    file->lock();
     //一般读取的时候绝大部分是向后读，所以缓存下面的几个block
     for(size_t p = c; p <= GetBlkNo(entry->st.st_size, blksize); p++){
         baidu_download_chunk(file, path, p, blksize, false);
         if(file->taskid.size() >= CACHEC)
             break;
     }
+    file->unlock();
     entry->unlock();
     bool synced = baidu_download_chunk(file, path, c, blksize, true);
     entry->lock();
@@ -1504,12 +1506,14 @@ wait:
         if(release)
             goto wait;
     }else {
+        entry->file->unlock();
         entry->lock();
         if((entry->flag & META_PUSHED) == 0){
             if(entry->blocklist){
                 json_object_put(entry->blocklist);
             }
             entry->blocklist = json_object_new_array();
+            entry->file->lock();
             for (size_t i = 0; i <= GetBlkNo(entry->st.st_size, entry->st.st_blksize); ++i) {
                 assert((entry->file->chunks[i]->flag & BL_DIRTY) == 0);
                 json_object_array_add(entry->blocklist, json_object_new_string(entry->file->chunks[i]->name.c_str()));
