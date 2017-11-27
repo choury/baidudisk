@@ -24,10 +24,10 @@ a client for baidudisk for linux
 libcurl4 libcurl4-openssl json-c libfuse2 libssl 和相应的dev包（如果有）
 
 怎么编译：
+```
 cmake .
-
 make
-
+```
 
 如果没有错误，当前目录下面会生成一个名为baidudisk的可执行文件
 
