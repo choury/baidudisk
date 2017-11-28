@@ -43,6 +43,10 @@ static char Access_Token[100];
 static int handleerror(const char *msg)
 {
     errorlog("msg: %s", msg);
+    if(msg == nullptr){
+        errno = EIO;
+        return -errno;
+    }
     json_object *json_get = json_tokener_parse(msg);
     if (json_get == NULL) {
         errorlog("json_tokener_parse filed!\n");
