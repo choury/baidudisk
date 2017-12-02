@@ -435,11 +435,11 @@ entry_t* entry_t::getentry(const string& path) {
         string child_name = childname(path);
         assert(file == nullptr);
         auto_lock _l(&dir->Lock);
-        for(auto d: dir->entrys){
-            if(d->path == child_name){
-                d->lock();
+        for(auto e: dir->entrys){
+            if(e->path == child_name){
+                e->lock();
                 this->unlock();
-                return d->getentry(subpath);
+                return e->getentry(subpath);
             }
         }
         this->unlock();

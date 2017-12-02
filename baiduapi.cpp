@@ -644,13 +644,13 @@ int baidu_opendir_e(entry_t* entry){
             std::string realpath = decodepath(bpath);
             std::string bname = basename(realpath);
             entry_t* e = getentryAt(entry, bname);
-            if(!e){
-                e = entry->add_entry(bname, (struct stat*)nullptr);
-            }
-            e->flag |= CHUNKED;
-            if(e->flag & META_PULLED){
+            if(e){
+                assert(e->flag & CHUNKED);
+                e->unlock();
                 continue;
             }
+            e = entry->add_entry(bname, (struct stat*)nullptr);
+            e->flag |= CHUNKED;
             entry->dir->taskid[bname] = addtask((taskfunc)readchunkattr, e, 0);
         }else{
             entry->add_entry(basename(bpath), &st);
@@ -748,6 +748,7 @@ int baidu_getattr(const char *path, struct stat *st) {
         }
     }
     pentry->dir->lock();
+    entry->unlock();
     if(pentry->dir->taskid.count(bname)){
         task_t taskid = pentry->dir->taskid[bname];
         pentry->dir->unlock();
@@ -755,6 +756,7 @@ int baidu_getattr(const char *path, struct stat *st) {
         pentry->dir->lock();
         pentry->dir->taskid.erase(bname);
     }
+    entry->lock();
     pentry->dir->unlock();
     pentry->unlock();
     if(entry->flag & META_PULLED){
