@@ -133,14 +133,17 @@ string decodepath(const string& path){
 }
 
 DirtyBlock::DirtyBlock(){
+    pthread_mutex_init(&lock, nullptr);
     sem_init(&cachec, 0 , CACHEC);
 }
 
 DirtyBlock::~DirtyBlock(){
+    pthread_mutex_destroy(&lock);
     sem_destroy(&cachec);
 }
 
 void DirtyBlock::insert(fblock* fb){
+    auto_lock _l(&lock);
     if(dirty.count(fb)){
         return;
     }
@@ -150,6 +153,7 @@ void DirtyBlock::insert(fblock* fb){
 }
 
 void DirtyBlock::erase(fblock* fb){
+    auto_lock _l(&lock);
     if(!dirty.count(fb)){
         return;
     }
@@ -209,7 +213,9 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
         assert(chunks[oc]->flag & BL_SYNCED);
         if((chunks[oc]->flag & BL_DIRTY) == 0){
             chunks[oc]->flag |= BL_DIRTY;
+            unlock();
             dirty.insert(chunks[oc]);
+            lock();
         }
         if(chunks[oc]->flag & BL_TRANS) {
             chunks[oc]->flag |= BL_REOPEN;
@@ -222,7 +228,9 @@ int fcache::truncate(size_t size, off_t offset, blksize_t blksize){
         assert(chunks[nc]->flag & BL_SYNCED);
         if((chunks[nc]->flag & BL_DIRTY) == 0){
             chunks[nc]->flag |= BL_DIRTY;
+            unlock();
             dirty.insert(chunks[nc]);
+            lock();
         }
         if(chunks[nc]->flag & BL_TRANS) {
             chunks[nc]->flag |= BL_REOPEN;
@@ -252,7 +260,9 @@ ssize_t fcache::write(const void* buff, size_t size, off_t offset, blksize_t blk
     if((fb->flag & BL_DIRTY) == 0){
         fb->flag |= BL_DIRTY;
         fb->flag |= BL_SYNCED;
+        unlock();
         dirty.insert(fb);
+        lock();
     }
     if(fb->flag & BL_TRANS) {
         fb->flag |= BL_REOPEN;

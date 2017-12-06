@@ -32,6 +32,7 @@ struct fblock{
 struct DirtyBlock{
 private:
     sem_t cachec;
+    pthread_mutex_t lock;
     std::set<fblock *> dirty;
 public:
     DirtyBlock();
