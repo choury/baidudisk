@@ -1581,8 +1581,21 @@ int baidu_utimens(const char *path, const struct timespec tv[2]){
     return 0;
 }
 
+int baidu_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){
+    if(strcmp(name, "user.dropcache")){
+        return -ENOTSUP;
+    }
+    entry_t *entry = getentry(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    entry->clear_cache();
+    entry->unlock();
+    return 0;
+}
 
-//only user.encrypt supported
+
+//only user.chunked supported
 int baidu_getxattr(const char *path, const char *name, char *value, size_t len){
     if(strcmp(name, "user.chunked")){
         return -ENODATA;
@@ -1594,6 +1607,9 @@ int baidu_getxattr(const char *path, const char *name, char *value, size_t len){
         return -ERANGE;
     }
     entry_t *entry = getentry(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
     if(entry->flag & CHUNKED){
         value[0]='1';
     }else{

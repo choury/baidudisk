@@ -50,6 +50,7 @@ int baidu_rmdir(const char *path);
 int baidu_rename(const char * oldname,const char *newname);
 int baidu_truncate(const char * path, off_t offset);
 int baidu_utimens(const char *path, const struct timespec tv[2]);
+int baidu_setxattr(const char *path, const char *name, const char *value, size_t size, int flags);
 int baidu_getxattr(const char *path, const char *name, char *value, size_t len);
 
 #ifdef  __cplusplus

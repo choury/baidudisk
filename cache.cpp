@@ -416,6 +416,9 @@ entry_t * entry_t::add_entry(std::string path, entry_t* e) {
 
 bool entry_t::clear_cache(){
     auto_lock l(&Lock);
+    if(opened != 0){
+        return false;
+    }
     if(dir){
         assert(file == nullptr);
         for(auto i = dir->entrys.begin(); i!= dir->entrys.end();){
