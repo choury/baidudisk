@@ -143,12 +143,14 @@ DirtyBlock::~DirtyBlock(){
 }
 
 void DirtyBlock::insert(fblock* fb){
-    auto_lock _l(&lock);
-    if(dirty.count(fb)){
-        return;
-    }
     sem_wait(&global_cachec);
     sem_wait(&cachec);
+    auto_lock _l(&lock);
+    if(dirty.count(fb)){
+        sem_post(&global_cachec);
+        sem_post(&cachec);
+        return;
+    }
     dirty.insert(fb);
 }
 
