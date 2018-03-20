@@ -18,8 +18,6 @@ extern "C" {
 
 extern char confpath[];
     
-
-
 int gettoken();
 int refreshtoken();
 int filesync(struct entry_t* node);

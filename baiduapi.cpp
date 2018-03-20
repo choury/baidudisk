@@ -40,9 +40,9 @@ static char Access_Token[100];
  * 只有我经常碰到的错误，并且我能对应得上的一些
  * 如果返回111,即AT过期，则刷新AT
  */
-static int handleerror(const char *msg)
+static int handleerror(const char* file, const char *msg)
 {
-    errorlog("msg: %s", msg);
+    errorlog("%s: %s", file, msg);
     if(msg == nullptr){
         errno = EIO;
         return -errno;
@@ -125,9 +125,9 @@ static int handleerror(const char *msg)
     return -errno;
 }
 
-#define ERROR_CHECK(ret) \
+#define ERROR_CHECK(file, ret) \
     if(ret > CURL_LAST){ \
-        ret = handleerror(bs.buf); \
+        ret = handleerror(file, bs.buf); \
         free(bs.buf); \
         return ret; \
     }\
@@ -191,7 +191,7 @@ void readblock(block_param *bp) {
         ret = request(r);
         Httpdestroy(r);
         if (ret > CURL_LAST) {
-            handleerror(bs.buf);
+            handleerror(fullpath, bs.buf);
             break;
         }
         if(ret != CURLE_OK){
@@ -264,7 +264,7 @@ void uploadblock(block_param *bp) {
         Httpdestroy(r);
 
         if(ret > CURL_LAST){
-            handleerror(write_bs.buf);
+            handleerror(fullpath, write_bs.buf);
             free(write_bs.buf);
             break;
         }
@@ -329,7 +329,7 @@ int readchunkattr(entry_t *entry) {
         ret = request(r);
         Httpdestroy(r);
         if(ret > CURL_LAST){
-            ret = handleerror(bs.buf);
+            ret = handleerror(fullpath, bs.buf);
             break;
         }
         if (ret != CURLE_OK) {
@@ -434,7 +434,7 @@ int gettoken() {
 
         int ret = request(r);
         Httpdestroy(r);
-        ERROR_CHECK(ret);
+        ERROR_CHECK("token", ret);
 
         json_get = json_tokener_parse(bs.buf);
         free(bs.buf);
@@ -503,7 +503,7 @@ int refreshtoken() {
 
         int ret = request(r);
         Httpdestroy(r);
-        ERROR_CHECK(ret);
+        ERROR_CHECK("refresh_token", ret);
 
         json_get = json_tokener_parse(bs.buf);
         free(bs.buf);
@@ -595,7 +595,7 @@ int baidu_opendir_e(entry_t* entry){
 
     int ret = request(r);
     Httpdestroy(r);
-    ERROR_CHECK(ret);
+    ERROR_CHECK(fullpath, ret);
 
     json_object *json_get = json_tokener_parse(bs.buf);
     free(bs.buf);
@@ -798,7 +798,7 @@ int baidu_statfs(const char *path, struct statvfs *sf)
 
     int ret = request(r);
     Httpdestroy(r);
-    ERROR_CHECK(ret);
+    ERROR_CHECK("qouta", ret);
 
     json_object *json_get = json_tokener_parse(bs.buf);
     free(bs.buf);
@@ -853,7 +853,7 @@ int baidu_mkdir(const char *path, mode_t mode) {
 
     int ret = request(r);
     Httpdestroy(r);
-    ERROR_CHECK(ret);
+    ERROR_CHECK(fullpath, ret);
 
     json_object *json_get = json_tokener_parse(bs.buf);
     free(bs.buf);
@@ -921,7 +921,7 @@ int baidu_unlink(const char *path) {
     int ret = request(r);
     Httpdestroy(r);
     if(ret > CURL_LAST){
-        ret = handleerror(bs.buf);
+        ret = handleerror(fullpath, bs.buf);
         free(bs.buf);
         if(ret == -ENOENT){
             entry->remove();
@@ -979,7 +979,7 @@ int baidu_rmdir(const char *path) {
 
     int ret = request(r);
     Httpdestroy(r);
-    ERROR_CHECK(ret);
+    ERROR_CHECK(fullpath, ret);
 
     json_object *json_get = json_tokener_parse(bs.buf);
     free(bs.buf);
@@ -1038,7 +1038,7 @@ int baidu_rename(const char *oldname, const char *newname) {
     int ret = request(r);
     Httpdestroy(r);
     if(ret > CURL_LAST){
-        ret = handleerror(bs.buf);
+        ret = handleerror("rename", bs.buf);
         free(bs.buf);
         if(ret == -EEXIST){
             snprintf(buff, sizeof(buff) - 1,
@@ -1422,7 +1422,7 @@ static int trim(entry_t *node){
 
     int ret = request(r);
     Httpdestroy(r);
-    ERROR_CHECK(ret);
+    ERROR_CHECK("delete", ret);
 
     free(bs.buf);
     return 0;
@@ -1473,7 +1473,7 @@ int baidu_updatemeta(entry_t *entry){
     int ret = request(r);
     Httpdestroy(r);
     json_object_put(jobj);
-    ERROR_CHECK(ret);
+    ERROR_CHECK(fullpath, ret);
     free(bs.buf);
     if(trim(entry)){
         errorlog("trim failed: %s\n", fullpath);
@@ -1521,7 +1521,7 @@ wait:
             entry->blocklist = json_object_new_array();
             entry->file->lock();
             for (size_t i = 0; i <= GetBlkNo(entry->st.st_size, entry->st.st_blksize); ++i) {
-                assert((entry->file->chunks[i]->flag & BL_DIRTY) == 0);
+                assert((entry->file->chunks[i]->flag & BL_DIRTY) == 0 || release == 0);
                 json_object_array_add(entry->blocklist, json_object_new_string(entry->file->chunks[i]->name.c_str()));
             }
             while(baidu_updatemeta(entry));

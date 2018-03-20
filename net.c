@@ -286,7 +286,6 @@ CURLcode request(Http *r){
 void netinit(){
     while(curl_global_init(CURL_GLOBAL_SSL)!= CURLE_OK) ;     //初始化curl
     init_locks();                                               //设置openssl的锁，让其支持多线程
-    errorlog = printf;                                          //可以替换成其他的log函数
     conhead=NULL;
     pthread_mutex_init(&lockcon,NULL);
 }

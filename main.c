@@ -39,7 +39,6 @@ struct fuse_operations baidu_oper = {
     .setxattr   = baidu_setxattr,
 };
 
-
 int main(int argc, char *argv[]) {
     netinit();                          //初始化网络
     sprintf(confpath, "%s/.baidudisk", getenv("HOME"));

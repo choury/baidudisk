@@ -1,5 +1,6 @@
 #include <curl/curl.h>
 #include <stdint.h>
+#include <syslog.h>
 #ifndef __NET_H__
 #define __NET_H__
 
@@ -7,6 +8,7 @@
 extern "C" {
 #endif
 
+#define errorlog(...)  syslog(LOG_ERR, __VA_ARGS__)
 
 typedef size_t (*CBfunc)( void *ptr, size_t size,size_t nmemb, void *stream);
 
@@ -32,7 +34,6 @@ void netinit();
 Http * Httpinit(const char *url);                   //根据url生成一个Http结构体，并返回它的指针，必须用HttpDestroy销毁，不然会内存泄漏
 void Httpdestroy(Http *hh); 
 CURLcode request( Http *r );                        //发送请求
-extern int (*errorlog)(const char * __restrict fmt,...);
 
 typedef struct {
     size_t offset;
