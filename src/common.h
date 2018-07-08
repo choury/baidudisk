@@ -1,3 +1,5 @@
+#include <linux/limits.h>
+
 #ifndef COMMON_H__
 #define COMMON_H__
 
@@ -7,5 +9,6 @@
 
 #define API_AK       "iN1yzFR9Sos27UWGEpjvKNVs"
 #define METANAME     "/meta.json"
-#define COFPATH       "/home/choury/.baidudisk"
+
+extern char COFPATH[];
 #endif

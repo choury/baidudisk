@@ -4,10 +4,12 @@
 
 #include <errno.h>
 
-
+char COFPATH[4096];
 static entry_t*  root;
 
 void baidu_prepare(){
+    sprintf(COFPATH, "%s/.baidudisk", getenv("HOME"));
+    mkdir(COFPATH, 0700);
     root = cache_root();
 }
 
