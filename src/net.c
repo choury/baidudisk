@@ -170,7 +170,7 @@ static CURL* getcurl(){
         free(tmp);
         curl_easy_reset(curl);
     }else{                                  //否则新生成一个，设定参数
-        curl=curl_easy_init();
+        curl = curl_easy_init();
     }
     pthread_mutex_unlock(&lockcon);
     curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, my_trace);
@@ -218,6 +218,7 @@ CURLcode request(Http *r){
 
     char errbuf[CURL_ERROR_SIZE] = {0};
     curl_easy_setopt(r->curl_handle, CURLOPT_ERRORBUFFER, errbuf);
+    //curl_easy_setopt(r->curl_handle, CURLOPT_FRESH_CONNECT, 1);
     if(r->timeout > 60){
         curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_LIMIT, 5);
         curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_TIME, 30);
@@ -292,17 +293,10 @@ void netinit(){
 
 Http *Httpinit(const char *url){
     Http *hh = malloc(sizeof(Http));
-    if(hh == NULL){
-        return NULL;
-    }
+    assert(hh);
     memset(hh, 0, sizeof(Http));
     hh->curl_handle = getcurl();
-    if(hh->curl_handle==NULL){
-        errorlog("curl init error:%s!\n",strerror(errno));
-        free(hh);
-        errno=EPROTO;
-        return NULL;
-    }
+    assert(hh->curl_handle);
     hh->url = url;
     hh->method = get;
     hh->timeout = 60;
@@ -312,40 +306,4 @@ Http *Httpinit(const char *url){
 void Httpdestroy(Http *hh){
     releasecurl(hh->curl_handle);
     free(hh);
-}
-
-
-static inline size_t min(size_t a, size_t b){
-   return a<b?a:b;
-}
-
-//顾名思义，将服务器传回的数据写到buff中
-size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
-{
-    buffstruct *bs = (buffstruct *) user_p;
-    if(bs->buf == NULL){
-        assert(bs->offset == 0);
-        assert(bs->len == 0);
-        bs->buf = (char*)calloc(1024, 1);
-        bs->len = 1024;
-    }
-    size_t len = size * nmemb;
-    if(bs->offset + len >= bs->len){
-        bs->len = ((bs->offset + len)&0xfffffffffc00)+1024;
-        bs->buf = (char*)realloc(bs->buf, bs->len);
-        memset(bs->buf + bs->offset, 0, bs->len - bs->offset);
-    }
-    memcpy(bs->buf + bs->offset, buffer, len);
-    bs->offset += len;
-    return len;
-}
-
-//你猜
-size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p)
-{
-    buffstruct *bs = (buffstruct *) user_p;
-    size_t len = min(size * nmemb, (bs->len) - (size_t)bs->offset);
-    memcpy(buffer, bs->buf + bs->offset, len);
-    bs->offset += len;
-    return len;
 }

@@ -1,9 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
+
 #include "utils.h"
 
 using std::string;
+
 
 int hex2num(char c)
 {
@@ -140,4 +143,117 @@ void xorcode(void* buf, size_t offset, size_t len, const char* key){
     }
 }
 
+string basename(const string& path) {
+    size_t pos = path.find_last_of("/");
+    if(pos == string::npos) {
+        return path;
+    }
+    if(path.length() == 1){
+        return path;
+    }
+    if(pos == path.length() -1 ) {
+        string path_truncate = path.substr(0, path.length()-1);
+        return basename(path_truncate);
+    }
+    return path.substr(pos+1, path.length());
+}
+
+string dirname(const string& path) {
+    size_t pos = path.find_last_of("/");
+    if(pos == string::npos) {
+        return ".";
+    }
+    if(path.length() == 1){
+        return path;
+    }
+    if(pos == path.length() -1 ) {
+        string path_truncate = path.substr(0, path.length()-1);
+        return dirname(path_truncate);
+    }
+    return path.substr(0, pos+1);
+}
+
+
+bool endwith(const string& s1, const string& s2){
+    auto l1 = s1.length();
+    auto l2 = s2.length();
+    if(l1 < l2)
+        return 0;
+    return !memcmp(s1.data()+l1-l2, s2.data(), l2);
+}
+
+string encodepath(const string& path){
+    if(dirname(path) == "."){
+        return Base64Encode(basename(path).c_str()) + ".def";
+    }else{
+        return dirname(path)+Base64Encode(basename(path).c_str()) + ".def";
+    }
+}
+
+string decodepath(const string& path){
+    assert(endwith(path, ".def"));
+    string base = basename(path);
+    if(dirname(path) == "."){
+        return Base64Decode(base.substr(0, base.length()-4).c_str());
+    }else{
+        return dirname(path)+Base64Decode(base.substr(0, base.length()-4).c_str());
+    }
+}
+
+
+buffstruct::buffstruct(char* buf, size_t len):buf(buf),len(len) {
+    offset = 0;
+    if(this->buf == nullptr){
+        this->buf = (char*)calloc(1024, 1);
+        len = 1024;
+    }else{
+        assert(len);
+    }
+}
+
+buffstruct::buffstruct(const char* buf, size_t len):buf((char *)buf), len(len) {
+    const_buff = true;
+}
+
+
+void buffstruct::expand(size_t size){
+    if(const_buff){
+        assert(0);
+        return;
+    }
+    if(offset + size >= len){
+        len = ((offset + size)&0xfffffffffc00)+1024;
+        buf = (char*)realloc(buf, len);
+        memset(buf + offset, 0, len - offset);
+    }
+}
+
+buffstruct::~buffstruct() {
+    if(!const_buff && buf){
+        free(buf);
+    }
+}
+
+
+
+//顾名思义，将服务器传回的数据写到buff中
+size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
+{
+    buffstruct *bs = (buffstruct *) user_p;
+    size_t len = size * nmemb;
+    bs->expand(len);
+    memcpy(bs->buf + bs->offset, buffer, len);
+    bs->offset += len;
+    return len;
+}
+
+//你猜
+size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p)
+{
+    buffstruct *bs = (buffstruct *) user_p;
+    size_t len = std::min(size * nmemb, (bs->len) - (size_t)bs->offset);
+    memcpy(buffer, bs->buf + bs->offset, len);
+    bs->offset += len;
+    return len;
+}
 

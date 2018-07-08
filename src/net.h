@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define errorlog(...)  syslog(LOG_ERR, __VA_ARGS__)
+#define errorlog(...)  fprintf(stderr, __VA_ARGS__)
 
 typedef size_t (*CBfunc)( void *ptr, size_t size,size_t nmemb, void *stream);
 
@@ -35,14 +35,7 @@ Http * Httpinit(const char *url);                   //根据url生成一个Http�
 void Httpdestroy(Http *hh); 
 CURLcode request( Http *r );                        //发送请求
 
-typedef struct {
-    size_t offset;
-    size_t len;
-    char *buf;
-} buffstruct;
 
-size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p);
-size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p);
 #ifdef __cplusplus
 }
 #endif

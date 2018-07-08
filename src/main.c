@@ -1,15 +1,8 @@
 #define FUSE_USE_VERSION 26
 
 #include <fuse.h>
-#include <stdio.h>
-#include <pthread.h>
-#include <stdlib.h>
 
-#include "baiduapi.h"
-#include "threadpool.h"
-#include "net.h"
-
-char confpath[1024];
+#include "baidufuse.h"
 
 struct fuse_operations baidu_oper = {
     .init       = baidu_init,
@@ -24,25 +17,23 @@ struct fuse_operations baidu_oper = {
     .rmdir      = baidu_rmdir,
     .rename     = baidu_rename,
     .statfs     = baidu_statfs,
-    .access     = baidu_access,
     .open       = baidu_open,
     .read       = baidu_read,
     .create     = baidu_create,
     .write      = baidu_write,
+    .flush      = baidu_flush,
     .release    = baidu_release,
     .ftruncate  = baidu_ftruncate,
-    .truncate   = baidu_truncate,
     .fsync      = baidu_fsync,
-    .flush      = baidu_flush,
     .utimens    = baidu_utimens,
     .getxattr   = baidu_getxattr,
     .setxattr   = baidu_setxattr,
+    .flag_nullpath_ok = 1,
+    .flag_nopath = 1,
+
 };
 
 int main(int argc, char *argv[]) {
-    netinit();                          //初始化网络
-    sprintf(confpath, "%s/.baidudisk", getenv("HOME"));
-    mkdir(confpath, 0700);
-    while(gettoken());                  //取得access_token
+    baidu_prepare();
     return fuse_main(argc, argv, &baidu_oper,NULL);
 }
