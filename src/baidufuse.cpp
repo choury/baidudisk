@@ -5,24 +5,27 @@
 #include <errno.h>
 
 char COFPATH[4096];
-static entry_t*  root;
 
 void baidu_prepare(){
     sprintf(COFPATH, "%s/.baidudisk", getenv("HOME"));
     mkdir(COFPATH, 0700);
-    root = cache_root();
+    cache_prepare();
 }
 
 void *baidu_init(struct fuse_conn_info *conn){
     conn->capable = conn->want & FUSE_CAP_BIG_WRITES;
-    return nullptr;
+    conn->max_background = 20;
+    conn->max_write = 1024*1024;
+    conn->max_readahead = 10*1024*1024;
+    return cache_root();
 }
 
-void baidu_destroy(void *){
-    delete root;
+void baidu_destroy(void* root){
+    delete (entry_t*)root;
 }
 
 int baidu_statfs(const char *path, struct statvfs *sf){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     return root->statfs(path, sf);
 }
 
@@ -46,6 +49,7 @@ int baidu_releasedir(const char*, struct fuse_file_info *fi){
 }
 
 int baidu_getattr(const char *path, struct stat *st){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
@@ -56,6 +60,7 @@ int baidu_getattr(const char *path, struct stat *st){
 
 
 int baidu_mkdir(const char *path, mode_t mode){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t* entry =  root->find(dirname(path));
     if(entry == nullptr){
         return -ENOENT;
@@ -64,6 +69,7 @@ int baidu_mkdir(const char *path, mode_t mode){
 }
 
 int baidu_unlink(const char *path){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t *entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
@@ -72,6 +78,7 @@ int baidu_unlink(const char *path){
 }
 
 int baidu_rmdir(const char *path){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t *entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
@@ -80,6 +87,7 @@ int baidu_rmdir(const char *path){
 }
 
 int baidu_rename(const char *oldname, const char *newname){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t* entry =  root->find(oldname);
     if(entry == nullptr){
         return -ENOENT;
@@ -96,6 +104,7 @@ int baidu_rename(const char *oldname, const char *newname){
 }
 
 int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t *entry = root->find(dirname(path));
     assert(entry);
     entry_t *nentry = entry->create(basename(path));
@@ -108,6 +117,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi){
 }
 
 int baidu_open(const char *path, struct fuse_file_info *fi){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
@@ -153,6 +163,7 @@ int baidu_release(const char *, struct fuse_file_info *fi){
 }
 
 int baidu_utimens(const char *path, const struct timespec tv[2]){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
     entry_t* entry = (entry_t*)root->find(path);
     if(entry == nullptr){
         return -ENOENT;

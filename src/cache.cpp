@@ -33,8 +33,11 @@ static string subname(const string& path) {
     return path.substr(pos+1, path.length());
 }
 
-entry_t* cache_root() {
+void cache_prepare() {
     baiduapi_prepare();
+}
+
+entry_t* cache_root() {
     creatpool(THREADS);
     start_prefetch();
     start_writeback();

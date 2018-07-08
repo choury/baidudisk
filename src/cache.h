@@ -61,6 +61,7 @@ public:
     int rmdir();
 };
 
+void cache_prepare();
 entry_t* cache_root();
 
 #endif

@@ -323,7 +323,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     }
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
-    for(size_t i = startc; i< endc + 20 && i<= GetBlkNo(this->size, blksize); i++){
+    for(size_t i = startc; i< endc + 10 && i<= GetBlkNo(this->size, blksize); i++){
         blocks[i]->prefetch(false);
     }
     for(size_t i = startc; i<= endc; i++ ){
