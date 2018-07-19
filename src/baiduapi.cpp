@@ -59,9 +59,6 @@ static int handleerror(const char* file, const char *msg, size_t len) {
         baiduapi_refreshtoken();
         errno = EAGAIN;
         break;
-    case 31200:
-        errno = EBUSY;
-        break;
     case 31021:
         errno = ENETUNREACH;
         break;
@@ -71,9 +68,9 @@ static int handleerror(const char* file, const char *msg, size_t len) {
         break;
 
     case 31034:
-        errno = ECONNREFUSED;
+    case 31045:
+        errno = EAGAIN;
         break;
-
     case 31061:
         errno = EEXIST;
         break;
@@ -94,6 +91,10 @@ static int handleerror(const char* file, const char *msg, size_t len) {
         errno = EISDIR;
         break;
         
+    case 31200:
+        errno = EBUSY;
+        break;
+
     case 31202:
     case 31297:
         errno = ENOENT;
@@ -254,6 +255,7 @@ static int baiduapi_refreshtoken() {
 
 void baiduapi_prepare(){
     netinit();
+    setCOFPATH();
     while(baiduapi_gettoken(COFPATH));
 }
 
@@ -593,6 +595,7 @@ int baiduapi_delete(const char *path) {
 
 
 int baiduapi_batchdelete(std::set<std::string> flist){
+retry:
     char buff[2048];
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -602,12 +605,16 @@ int baiduapi_batchdelete(std::set<std::string> flist){
     json_object *jobj = json_object_new_object();
     json_object *jarray = json_object_new_array();
 
-    for(auto i: flist) {
+    for(auto i =  flist.begin(); i != flist.end();) {
         json_object *jpath = json_object_new_object();
         char path[PATHLEN];
-        sprintf(path, "%s/%s", basepath, i.c_str());
+        sprintf(path, "%s/%s", basepath, i->c_str());
         json_object_object_add(jpath, "path", json_object_new_string(path));
         json_object_array_add(jarray, jpath);
+        i = flist.erase(i);
+        if(json_object_array_length(jarray) == 200){
+            break;
+        }
     }
     json_object_object_add(jobj, "list", jarray);
     param += json_object_to_json_string(jobj);
@@ -626,6 +633,9 @@ int baiduapi_batchdelete(std::set<std::string> flist){
 
     int ret = request(r);
     ERROR_CHECK(ret);
+    if(!flist.empty()){
+        goto retry;
+    }
     return 0;
 }
 

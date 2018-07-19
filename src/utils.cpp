@@ -2,19 +2,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/stat.h>
 
 #include "utils.h"
 
 using std::string;
 
+char COFPATH[4096];
 
-int hex2num(char c)
-{
+void setCOFPATH(){
+    sprintf(COFPATH, "%s/.baidudisk", getenv("HOME"));
+    mkdir(COFPATH, 0700);
+}
+
+static int hex2num(char c) {
     if (c>='0' && c<='9') return c - '0';
     if (c>='a' && c<='z') return c - 'a' + 10;//这里+10的原因是:比如16进制的a值为10
     if (c>='A' && c<='Z') return c - 'A' + 10;
 
-    printf("unexpected char: %c", c);
+    fprintf(stderr, "unexpected char: %c", c);
     return '0';
 }
 
@@ -180,6 +186,14 @@ bool endwith(const string& s1, const string& s2){
     if(l1 < l2)
         return 0;
     return !memcmp(s1.data()+l1-l2, s2.data(), l2);
+}
+
+bool startwith(const string& s1, const string& s2){
+    auto l1 = s1.length();
+    auto l2 = s2.length();
+    if(l1 < l2)
+        return 0;
+    return !memcmp(s1.data(), s2.data(), l2);
 }
 
 string encodepath(const string& path){

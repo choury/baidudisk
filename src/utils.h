@@ -15,6 +15,7 @@ public:
     ~buffstruct();
 };
 
+void setCOFPATH();
 
 std::string URLEncode(const char* str);
 std::string URLDecode(const char* str);
@@ -26,6 +27,7 @@ std::string dirname(const std::string& path);
 std::string basename(const std::string& path);
 std::string encodepath(const std::string& path);
 std::string decodepath(const std::string& path);
+bool startwith(const std::string& s1, const std::string& s2);
 bool endwith(const std::string& s1, const std::string& s2);
 
 size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p);

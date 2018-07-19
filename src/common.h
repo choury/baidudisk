@@ -8,7 +8,8 @@
 #define THREADS        50
 
 #define API_AK       "iN1yzFR9Sos27UWGEpjvKNVs"
-#define METANAME     "/meta.json"
+#define METANAME      "meta.json"
+#define METAPATH     "/" METANAME
 
 extern char COFPATH[];
 #endif

@@ -1,5 +1,6 @@
 #include "threadpool.h"
 #include <stdlib.h>
+#include <unistd.h>
 #include <semaphore.h>
 #include <assert.h>
 #include <unordered_map>
@@ -187,6 +188,25 @@ task_t addtask(taskfunc task, void *param , uint flags, unsigned int delaySec) {
 
 //多线程同时查询，只保证最先返回的能得到结果，其他有可能返回NULL
 void *waittask(task_t id) {
+    if(id == 0){
+recheck:
+        pthread_mutex_lock(&poollock);
+        if(!pool.tasks.empty()){
+            pthread_mutex_unlock(&poollock);
+            sleep(5);
+            goto recheck;
+        }
+
+        for(auto i = 0; i < pool.num; ++i) {
+            if (pool.tsk[i]){
+                pthread_mutex_unlock(&poollock);
+                sleep(5);
+                goto recheck;
+            }
+        }
+        pthread_mutex_unlock(&poollock);
+        return nullptr;
+    }
     void *retval = NULL;
     pthread_mutex_lock(&vallock);
     int count = valmap.count(id);

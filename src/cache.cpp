@@ -97,7 +97,7 @@ void entry_t::init_wait() {
 void entry_t::pull(entry_t* entry) {
     assert(entry->flags & ENTRY_CHUNCED);
     buffstruct bs;
-    int ret = HANDLE_EAGAIN(baiduapi_download((entry->getpath()+METANAME).c_str(), 0, 0, bs));
+    int ret = HANDLE_EAGAIN(baiduapi_download((entry->getpath()+METAPATH).c_str(), 0, 0, bs));
     if(ret != 0){
         throw "baiduapi IO Error";
     }
@@ -338,7 +338,7 @@ int entry_t::sync(int datasync){
         const char *jstring = json_object_to_json_string(jobj);
 
         char path[PATHLEN];
-        int ret = HANDLE_EAGAIN(baiduapi_upload((getpath() + METANAME).c_str(), jstring, strlen(jstring), true, path));
+        int ret = HANDLE_EAGAIN(baiduapi_upload((getpath() + METAPATH).c_str(), jstring, strlen(jstring), true, path));
         assert(ret == 0);
         json_object_put(jobj);
         file->post_sync();
