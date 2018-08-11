@@ -71,10 +71,10 @@ void writeback(){
         for(auto i = writelist.begin(); i!= writelist.end();){
             if((*i)->staled() >= 30){
                 addtask((taskfunc)block_t::push, *i, 0, 0);
+                i = writelist.erase(i);
             }else{
                 break;
             }
-            i = writelist.erase(i);
         }
         pthread_mutex_unlock(&writelock);
     }
@@ -117,7 +117,7 @@ block_t::~block_t() {
     pthread_mutex_lock(&writelock);
     for(auto i = writelist.begin(); i != writelist.end();){
         if(*i ==  this){
-            i = readlist.erase(i);
+            i = writelist.erase(i);
             sem_post(&dirty_sem);
         }else{
             i++;
@@ -208,6 +208,17 @@ void block_t::makedirty() {
 }
 
 void block_t::sync(){
+    pthread_mutex_lock(&writelock);
+    for(auto i = writelist.begin(); i != writelist.end();){
+        if(*i ==  this){
+            addtask((taskfunc)block_t::push, this, 0, 0);
+            i = writelist.erase(i);
+            break;
+        }else{
+            i++;
+        }
+    }
+    pthread_mutex_unlock(&writelock);
     rlock();
     while(flags & BLOCK_DIRTY){
         //TODO notify by thread_cond
