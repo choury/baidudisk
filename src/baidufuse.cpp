@@ -10,7 +10,7 @@ void baidu_prepare(){
 }
 
 void *baidu_init(struct fuse_conn_info *conn){
-    conn->capable = conn->want & FUSE_CAP_BIG_WRITES;
+    conn->capable = conn->want & FUSE_CAP_BIG_WRITES & FUSE_CAP_EXPORT_SUPPORT;
     conn->max_background = 20;
     conn->max_write = 1024*1024;
     conn->max_readahead = 10*1024*1024;
@@ -169,9 +169,9 @@ int baidu_utimens(const char *path, const struct timespec tv[2]){
 }
 
 int baidu_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){
-    return -ENOSYS;
+    return -ENOTSUP;
 }
 
 int baidu_getxattr(const char *path, const char *name, char *value, size_t len){
-    return -ENOSYS;
+    return -ENOTSUP;
 }

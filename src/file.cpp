@@ -157,8 +157,12 @@ void block_t::push(block_t* b) {
         char inpath[PATHLEN];
         snprintf(inpath, sizeof(inpath)-1, "%s/%zu", path.c_str(), b->no);
         char outpath[PATHLEN];
+retry:
         int ret = HANDLE_EAGAIN(baiduapi_upload(inpath, buff, len, false, outpath));
         free(buff);
+        if(ret != 0 && errno == EEXIST){
+            goto retry;
+        }
         if(ret != 0){
             throw "baiduapi IO Error";
         }

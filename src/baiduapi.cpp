@@ -1,5 +1,6 @@
 #include <string.h>
 #include <errno.h>
+#include <assert.h>
 
 #include <unistd.h>
 
@@ -103,6 +104,8 @@ static int handleerror(const char* file, const char *msg, size_t len) {
     case 31212:
     case 31233:
     case 31243:
+    case 31299:
+    case 31811:
         errno = ETIMEDOUT;
         break;
 
@@ -375,7 +378,8 @@ int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct s
     }
 
     json_object *jlist;
-    json_object_object_get_ex(json_get, "list", &jlist);
+    ret = json_object_object_get_ex(json_get, "list", &jlist);
+    assert(ret);
 
     for (int i = 0; i < json_object_array_length(jlist); ++i) {
         struct stat st;
@@ -384,24 +388,29 @@ int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct s
         json_object *filenode = json_object_array_get_idx(jlist, i);
 
         json_object *jmtime;
-        json_object_object_get_ex(filenode, "mtime",&jmtime);
+        ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
+        assert(ret);
         st.st_mtime = json_object_get_int64(jmtime);
 
         json_object *jctime;
-        json_object_object_get_ex(filenode, "ctime",&jctime);
+        ret = json_object_object_get_ex(filenode, "ctime",&jctime);
+        assert(ret);
         st.st_ctime = json_object_get_int64(jctime);
 
         json_object *jfs_id;
-        json_object_object_get_ex(filenode, "fs_id",&jfs_id);
+        ret = json_object_object_get_ex(filenode, "fs_id",&jfs_id);
+        assert(ret);
         st.st_ino = json_object_get_int64(jfs_id);
 
         json_object *jsize;
-        json_object_object_get_ex(filenode, "size",&jsize);
+        ret = json_object_object_get_ex(filenode, "size",&jsize);
+        assert(ret);
         st.st_size = json_object_get_int64(jsize);
         st.st_blksize = BLOCKLEN;
 
         json_object *jisdir;
-        json_object_object_get_ex(filenode, "isdir",&jisdir);
+        ret = json_object_object_get_ex(filenode, "isdir",&jisdir);
+        assert(ret);
         if (json_object_get_boolean(jisdir)) {
             st.st_mode = S_IFDIR | 0755;
         } else {
@@ -409,7 +418,8 @@ int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct s
         }
 
         json_object *jpath;
-        json_object_object_get_ex(filenode, "path", &jpath);
+        ret = json_object_object_get_ex(filenode, "path", &jpath);
+        assert(ret);
         const char *bpath = json_object_get_string(jpath) + strlen(basepath);
         stmap[bpath] = st;
     }
@@ -449,28 +459,34 @@ int baiduapi_getattr(const char *path, struct stat *st) {
     }
 
     json_object* jlist;
-    json_object_object_get_ex(json_get, "list",&jlist);
+    ret = json_object_object_get_ex(json_get, "list",&jlist);
+    assert(ret);
     json_object* filenode = json_object_array_get_idx(jlist, 0);
 
     json_object *jmtime;
-    json_object_object_get_ex(filenode, "mtime",&jmtime);
+    ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
+    assert(ret);
     st->st_mtim.tv_sec = json_object_get_int64(jmtime);
 
     json_object *jctime;
-    json_object_object_get_ex(filenode, "ctime",&jctime);
+    ret = json_object_object_get_ex(filenode, "ctime",&jctime);
+    assert(ret);
     st->st_ctim.tv_sec = json_object_get_int64(jctime);
 
     json_object *jfs_id;
-    json_object_object_get_ex(filenode, "fs_id",&jfs_id);
+    ret = json_object_object_get_ex(filenode, "fs_id",&jfs_id);
+    assert(ret);
     st->st_ino = json_object_get_int64(jfs_id);
 
     json_object *jsize;
-    json_object_object_get_ex(filenode, "size",&jsize);
+    ret = json_object_object_get_ex(filenode, "size",&jsize);
+    assert(ret);
     st->st_size = json_object_get_int64(jsize);
     st->st_blksize = BLOCKLEN;
 
     json_object *jisdir;
-    json_object_object_get_ex(filenode, "isdir",&jisdir);
+    ret = json_object_object_get_ex(filenode, "isdir",&jisdir);
+    assert(ret);
     if (json_object_get_boolean(jisdir)) {
         st->st_mode = S_IFDIR | 0755;                        //文件：只读，想要写，对不起，先拷贝一份下来，然后覆盖
     } else {
@@ -509,11 +525,13 @@ int baiduapi_statfs(const char *path, struct statvfs *sf) {
     sf->f_frsize = 1;
     
     json_object *jquota;
-    json_object_object_get_ex(json_get, "quota", &jquota);
+    ret = json_object_object_get_ex(json_get, "quota", &jquota);
+    assert(ret);
     sf->f_blocks = json_object_get_int64(jquota);
     
     json_object *jused;
-    json_object_object_get_ex(json_get, "used", &jused);
+    ret = json_object_object_get_ex(json_get, "used", &jused);
+    assert(ret);
     sf->f_bavail = sf->f_blocks - json_object_get_int64(jused);
     sf->f_bfree = sf->f_bavail;
     json_object_put(json_get);
@@ -553,15 +571,18 @@ int baiduapi_mkdir(const char *path, struct stat* st) {
     memset(st, 0, sizeof(struct stat));
     st->st_nlink = 1;
     json_object *jfs_id;
-    json_object_object_get_ex(json_get, "fs_id",&jfs_id);
+    ret = json_object_object_get_ex(json_get, "fs_id",&jfs_id);
+    assert(ret);
     st->st_ino = json_object_get_int64(jfs_id);
     
     json_object *jmtime;
-    json_object_object_get_ex(json_get, "mtime",&jmtime);
+    ret = json_object_object_get_ex(json_get, "mtime",&jmtime);
+    assert(ret);
     st->st_mtime = json_object_get_int64(jmtime);
     
     json_object *jctime;
-    json_object_object_get_ex(json_get, "ctime",&jctime);
+    ret = json_object_object_get_ex(json_get, "ctime",&jctime);
+    assert(ret);
     st->st_ctime = json_object_get_int64(jctime);
     
     st->st_mode = S_IFDIR | 0755;

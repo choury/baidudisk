@@ -30,7 +30,8 @@ void dir_t::pull() {
     for(auto i: smap){
         std::string bname = basename(i.first);
         if(endwith(bname, ".def")){
-            entrys[decodepath(bname)] = nullptr;
+            std::string dname = decodepath(bname);
+            entrys[dname] = new entry_t(entry, dname);
         }else{
             i.second.st_ino = 0;
             entrys[bname] = new entry_t(entry, bname, &i.second);
@@ -46,9 +47,6 @@ entry_t* dir_t::find(std::string path) {
     }
     assert(flags & DIR_PULLED);
     if(entrys.count(path)){
-        if(entrys[path] == nullptr){
-            entrys[path] = new entry_t(entrys["."], path);
-        }
         return entrys[path];
     }else{
         return nullptr;

@@ -5,6 +5,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unistd.h>
 
 #include "common.h"
 #include "utils.h"
@@ -25,15 +26,18 @@ int baiduapi_delete(const char *path);
 int baiduapi_batchdelete(std::set<std::string> flist);
 int baiduapi_rename(const char *oldname, const char *newname);
 
-#define HANDLE_EAGAIN(x) ({       \
+#define HANDLE_EAGAIN(x) ({      \
   __typeof__(x) _result;          \
-  do                              \
-  {                               \
+  while(true){                    \
     _result = (x);                \
-  }while (_result != 0            \
+    if(_result != 0               \
   && (errno == EAGAIN ||          \
       errno == ETIMEDOUT ||       \
-      errno == EBUSY));           \
+      errno == EBUSY))            \
+      sleep(1);                   \
+    else                          \
+      break;                      \
+  }                               \
   _result;                        \
 })
 

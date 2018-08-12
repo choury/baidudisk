@@ -108,19 +108,23 @@ void entry_t::pull(entry_t* entry) {
     struct stat st;
     memset(&st, 0, sizeof(st));
     json_object* jctime;
-    json_object_object_get_ex(json_get, "ctime", &jctime);
+    ret = json_object_object_get_ex(json_get, "ctime", &jctime);
+    assert(ret);
     entry->ctime = json_object_get_int64(jctime);
 
     json_object* jmtime;
-    json_object_object_get_ex(json_get, "mtime", &jmtime);
+    ret = json_object_object_get_ex(json_get, "mtime", &jmtime);
+    assert(ret);
     st.st_mtime = json_object_get_int64(jmtime);
 
     json_object* jsize;
-    json_object_object_get_ex(json_get, "size", &jsize);
+    ret = json_object_object_get_ex(json_get, "size", &jsize);
+    assert(ret);
     st.st_size = json_object_get_int64(jsize);
 
     json_object *jencoding;
-    json_object_object_get_ex(json_get, "encoding", &jencoding);
+    ret = json_object_object_get_ex(json_get, "encoding", &jencoding);
+    assert(ret);
     const char* encoding = json_object_get_string(jencoding);
     if(strcasecmp(encoding, "xor") == 0){
         st.st_ino = FILE_ENCODE;
@@ -129,11 +133,13 @@ void entry_t::pull(entry_t* entry) {
     }
 
     json_object *jblksize;
-    json_object_object_get_ex(json_get, "blksize", &jblksize);
+    ret = json_object_object_get_ex(json_get, "blksize", &jblksize);
+    assert(ret);
     st.st_blksize = json_object_get_int64(jblksize);
 
     json_object *jblock_list;
-    json_object_object_get_ex(json_get, "block_list", &jblock_list);
+    ret = json_object_object_get_ex(json_get, "block_list", &jblock_list);
+    assert(ret);
 
     std::vector<string> fblocks(json_object_array_length(jblock_list));
     for(int i=0; i < json_object_array_length(jblock_list); i++){
@@ -421,9 +427,11 @@ int entry_t::unlink() {
 
 int entry_t::rmdir() {
     auto_wlock(this);
-    assert(opened == 0);
     if(!S_ISDIR(mode)){
         return -ENOTDIR;
+    }
+    if(opened){
+        return -EBUSY;
     }
     if(dir->get_entrys().size() != 2){
         return -ENOTEMPTY;
