@@ -4,6 +4,7 @@
 #define COMMON_H__
 
 #define BLOCKLEN       (uint64_t)0x100000          //1M,缓存分块大小 必须为4K的倍数
+#define INLINE_DLEN    (uint64_t)0x20000           //inline data limit
 #define PATHLEN        1024
 #define THREADS        50
 

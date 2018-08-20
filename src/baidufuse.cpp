@@ -124,6 +124,15 @@ int baidu_open(const char *path, struct fuse_file_info *fi){
     return entry->open();
 }
 
+int baidu_truncate(const char* path, off_t offset){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    entry_t* entry = root->find(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    return entry->truncate(offset);
+}
+
 int baidu_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
     entry_t* entry = (entry_t*)fi->fh;
     return entry->getattr(st);

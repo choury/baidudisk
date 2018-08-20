@@ -14,6 +14,7 @@ using namespace std;
 
 static bool verbose = false;
 static bool autofix = false;
+static bool recursive = false;
 
 static mutex console_lock;
 
@@ -169,7 +170,22 @@ void checkchunk(char *pathStr) {
     }
     set<string> ftrim;
     for (auto f : fs) {
-        if (blks[stoi(f)] != f) {
+        if (!isdigit(f[0])){
+            cerr<<lock<<"file: "<<decodepath(path)<<" has unwanted block: "<<f<<endl<<unlock;
+            if(autofix){
+                ftrim.insert(path + "/" + f);
+            }
+            continue;
+        }
+        int i = stoi(f);
+        if(i < 0 || blks.size() <= (size_t)i){
+            cerr<<lock<<"file: "<<decodepath(path)<<" has unwanted block: "<<f<<endl<<unlock;
+            if(autofix){
+                ftrim.insert(path + "/" + f);
+            }
+            continue;
+        }
+        if (blks[i] != f) {
             cerr<<lock<<"file: "<<decodepath(path)<<" has lagecy block: "<<f<<"/"<<blks[stoi(f)]<<endl<<unlock;
             if (autofix) {
                 ftrim.insert(path + "/" + f);
@@ -207,7 +223,7 @@ void checkfile(char* pathStr) {
 
         if(endwith(f.first, ".def")){
             addtask((taskfunc)checkchunk, strdup(f.first.c_str()), 0, 0);
-        }else{
+        }else if(recursive){
             addtask((taskfunc)checkfile, strdup(f.first.c_str()), 0, 0);
         }
     }
@@ -218,7 +234,7 @@ int main(int argc, char **argv)
 {
     baiduapi_prepare();
     char ch;
-    while ((ch = getopt(argc, argv, "vf")) != -1)
+    while ((ch = getopt(argc, argv, "vfr")) != -1)
         switch (ch) {
         case 'v':
             cout << "verbose mode" << endl;
@@ -227,6 +243,10 @@ int main(int argc, char **argv)
         case 'f':
             cout << "will try fix error" << endl;
             autofix = true;
+            break;
+        case 'r':
+            cout << "will check recursive" <<endl;
+            recursive = true;
             break;
         }
     const char *path;

@@ -87,28 +87,28 @@ string URLDecode(const char* str) {
 
 static const char *base64_endigs="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-string Base64Encode(const char *s, size_t len){
-    string dst;
-    size_t i=0;
-    len = len?len:strlen(s);
-    const unsigned char *src = (const unsigned char*)s;
+size_t Base64Encode(const char *s, size_t len, char *dst){
+    size_t i=0,j=0;
+    const unsigned char* src = (const unsigned char *)s;
     for(;i+2<len;i+=3){
-        dst += base64_endigs[src[i]>>2];
-        dst += base64_endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
-        dst += base64_endigs[((src[i+1]<<2) & 0x3c) | src[i+2]>>6];
-        dst += base64_endigs[src[i+2] & 0x3f];
+        dst[j++] = base64_endigs[src[i]>>2];
+        dst[j++] = base64_endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
+        dst[j++] = base64_endigs[((src[i+1]<<2) & 0x3c) | src[i+2]>>6];
+        dst[j++] = base64_endigs[src[i+2] & 0x3f];
     }
     if(i == len-1){
-        dst += base64_endigs[src[i]>>2];
-        dst += base64_endigs[(src[i]<<4) & 0x30];
-        dst += "==";
+        dst[j++] = base64_endigs[src[i]>>2];
+        dst[j++] = base64_endigs[(src[i]<<4) & 0x30];
+        dst[j++] = '=';
+        dst[j++] = '=';
     }else if(i == len-2){
-        dst += base64_endigs[src[i]>>2];
-        dst += base64_endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
-        dst += base64_endigs[(src[i+1]<<2) & 0x3c];
-        dst += '=';
+        dst[j++] = base64_endigs[src[i]>>2];
+        dst[j++] = base64_endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
+        dst[j++] = base64_endigs[(src[i+1]<<2) & 0x3c];
+        dst[j++] = '=';
     }
-    return dst;
+    dst[j] = 0;
+    return j;
 }
 
 static const char base64_dedigs[128] = 
@@ -121,20 +121,24 @@ static const char base64_dedigs[128] =
  0,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
  41,42,43,44,45,46,47,48,49,50,51,0,0,0,0,0};
 
-string Base64Decode(const char *src){
-    size_t len = strlen(src);
-    string result;
-    for(size_t i=0;i<len; i+= 4){
+size_t Base64Decode(const char *src, size_t len, char* dst){
+    size_t i=0, j = 0;
+    for(;i<len; i+= 4){
         char ch1 = (base64_dedigs[(int)src[i]]<<2) | (base64_dedigs[(int)src[i+1]] >>4);
+        dst[j++] = ch1;
+        if(i+2 >= len || src[i+2] == '='){
+            break;
+        }
         char ch2 = (base64_dedigs[(int)src[i+1]]<<4) | (base64_dedigs[(int)src[i+2]] >>2);
+        dst[j++] = ch2;
+        if(i+3 >= len || src[i+3] == '='){
+            break;
+        }
         char ch3 = (base64_dedigs[(int)src[i+2]]<<6) | base64_dedigs[(int)src[i+3]];
-        result += ch1;
-        if(ch2)
-            result += ch2;
-        if(ch3)
-            result += ch3;
+        dst[j++] = ch3;
     }
-    return result;
+    dst[j] = 0;
+    return j;
 }
 
 void xorcode(void* buf, size_t offset, size_t len, const char* key){
@@ -197,20 +201,25 @@ bool startwith(const string& s1, const string& s2){
 }
 
 string encodepath(const string& path){
+    string bname = basename(path);
+    char dst[bname.length()*2];
+    Base64Encode(bname.data(), bname.length(), dst);
     if(dirname(path) == "."){
-        return Base64Encode(basename(path).c_str()) + ".def";
+        return string(dst) + ".def";
     }else{
-        return dirname(path)+Base64Encode(basename(path).c_str()) + ".def";
+        return dirname(path)+ dst + ".def";
     }
 }
 
 string decodepath(const string& path){
     assert(endwith(path, ".def"));
-    string base = basename(path);
+    string bname = basename(path);
+    char dst[bname.length()];
+    Base64Decode(bname.substr(0, bname.length()-4).data(), bname.length() - 4, dst);
     if(dirname(path) == "."){
-        return Base64Decode(base.substr(0, base.length()-4).c_str());
+        return dst;
     }else{
-        return dirname(path)+Base64Decode(base.substr(0, base.length()-4).c_str());
+        return dirname(path) + dst;
     }
 }
 

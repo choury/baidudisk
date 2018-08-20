@@ -23,6 +23,7 @@ int baidu_rmdir(const char *path);
 int baidu_rename(const char *oldname, const char *newname);
 int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi);
 int baidu_open(const char *path, struct fuse_file_info *fi);
+int baidu_truncate(const char* path, off_t offset);
 int baidu_fgetattr(const char* path, struct stat* st, struct fuse_file_info* fi);
 int baidu_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
 int baidu_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi);

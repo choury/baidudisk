@@ -19,8 +19,8 @@ void setCOFPATH();
 
 std::string URLEncode(const char* str);
 std::string URLDecode(const char* str);
-std::string Base64Encode(const char *src, size_t len=0);
-std::string Base64Decode(const char *src);
+size_t Base64Encode(const char *src, size_t len, char *dst);
+size_t Base64Decode(const char *src, size_t len, char* dst);
 void xorcode(void* buf, size_t offset, size_t len, const char* key);
 
 std::string dirname(const std::string& path);

@@ -29,7 +29,7 @@ void dir_t::pull() {
     }
     for(auto i: smap){
         std::string bname = basename(i.first);
-        if(endwith(bname, ".def")){
+        if(endwith(bname, ".def") && S_ISDIR(i.second.st_mode)){
             std::string dname = decodepath(bname);
             entrys[dname] = new entry_t(entry, dname);
         }else{

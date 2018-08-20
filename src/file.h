@@ -37,6 +37,7 @@ public:
 class file_t: locker {
     entry_t* entry;
     int fd = 0;
+    char* inline_data = nullptr;
     size_t size;
     blksize_t blksize;
     time_t   mtime;

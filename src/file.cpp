@@ -283,9 +283,11 @@ file_t::file_t(entry_t *entry, const struct stat* st):
     //creata new file
         assert(size == 0);
         flags &= ~FILE_CREATE;
+        inline_data = new char[INLINE_DLEN];
         blocks[0] = new block_t(this, "x", 0, 0, blksize);
         return;
     }
+    //for the non-chunk file
     for(size_t i = 0; i <= GetBlkNo(size, blksize); i++ ){
         blocks[i] = new block_t(this, "", i, blksize * i, blksize);
     }
@@ -298,8 +300,13 @@ file_t::file_t(entry_t* entry, const struct stat* st, std::vector<std::string> f
     mtime(st->st_mtime),
     flags(st->st_ino)
 {
-    //zero is the first block
-    assert(fblocks.size() == GetBlkNo(size, blksize)+1);
+    if(st->st_dev){
+        inline_data = (char*)st->st_dev;
+        blocks[0] = new block_t(this, "x", 0, 0, blksize);
+    }else{
+        //zero is the first block
+        assert(fblocks.size() == GetBlkNo(size, blksize)+1);
+    }
     for(size_t i = 0; i < fblocks.size(); i++ ){
         blocks[i] = new block_t(this, fblocks[i], i, blksize * i, blksize);
     }
@@ -312,6 +319,9 @@ file_t::~file_t() {
     }
     if(fd){
         close(fd);
+    }
+    if(inline_data){
+        delete[] inline_data;
     }
     pthread_mutex_destroy(&extraLocker);
 }
@@ -336,6 +346,10 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     if(offset + size > this->size){
         size = this->size - offset;
     }
+    if(inline_data){
+        memcpy(buff, inline_data + offset, size);
+        return size;
+    }
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
     for(size_t i = startc; i< endc + 10 && i<= GetBlkNo(this->size, blksize); i++){
@@ -349,6 +363,9 @@ int file_t::read(void* buff, off_t offset, size_t size) {
 
 int file_t::truncate(off_t offset){
     auto_wlock(this);
+    if((size_t)offset == size){
+        return 0;
+    }
     size_t newc = GetBlkNo(offset, blksize);
     size_t oldc = GetBlkNo(size, blksize);
     if(newc > oldc){
@@ -356,7 +373,7 @@ int file_t::truncate(off_t offset){
             blocks[i] = new block_t(this, "x", i, blksize * i, blksize);
         }
     }
-    if(oldc > newc){
+    if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
         for(size_t i = newc + 1; i<= oldc; i++){
             delete blocks[i];
@@ -366,6 +383,9 @@ int file_t::truncate(off_t offset){
         blocks[newc]->makedirty();
     }
     size = offset;
+    if(size == 0 && inline_data == nullptr){
+        inline_data = new char[INLINE_DLEN];
+    }
     mtime = time(0);
     flags |= FILE_DIRTY;
     assert(fd);
@@ -380,13 +400,21 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
             return ret;
         }
     }
-    size_t startc = GetBlkNo(offset, blksize);
-    size_t endc = GetBlkNo(offset + size, blksize);
-    for(size_t i = startc; i <= endc; i++){
-        blocks[i]->prefetch(true);
-    }
-    for(size_t i =  startc; i <= endc; i++){
-        blocks[i]->makedirty();
+    if(inline_data && this->size < INLINE_DLEN){
+        memcpy(inline_data + offset, buff, size);
+    }else{
+        size_t startc = GetBlkNo(offset, blksize);
+        size_t endc = GetBlkNo(offset + size, blksize);
+        for(size_t i = startc; i <= endc; i++){
+            blocks[i]->prefetch(true);
+        }
+        for(size_t i =  startc; i <= endc; i++){
+            blocks[i]->makedirty();
+        }
+        if(inline_data){
+            delete[] inline_data;
+            inline_data = nullptr;
+        }
     }
     __r.upgrade();
     mtime = time(0);
@@ -405,6 +433,9 @@ int file_t::sync(){
 
 std::vector<string> file_t::getfblocks(){
     auto_rlock(this);
+    if(inline_data){
+        return std::vector<string>();
+    }
     std::vector<string> fblocks(blocks.size());
     for(auto i : this->blocks){
         fblocks[i.first] = i.second->getname();
@@ -479,6 +510,7 @@ struct stat file_t::getattr() {
     auto_rlock(this);
     struct stat st;
     memset(&st, 0, sizeof(st));
+    st.st_dev = (dev_t)inline_data;
     st.st_ino = flags;
     st.st_size = size;
     st.st_blksize = blksize;

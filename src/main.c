@@ -18,6 +18,7 @@ struct fuse_operations baidu_oper = {
     .rename     = baidu_rename,
     .statfs     = baidu_statfs,
     .open       = baidu_open,
+    .truncate   = baidu_truncate,
     .read       = baidu_read,
     .create     = baidu_create,
     .write      = baidu_write,

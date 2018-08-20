@@ -147,6 +147,14 @@ void entry_t::pull(entry_t* entry) {
         const char* name = json_object_get_string(block);
         fblocks[i] = name;
     }
+
+    json_object *jinline_data;
+    ret = json_object_object_get_ex(json_get, "inline_data", &jinline_data);
+    if(ret){
+        char* inline_data = new char[INLINE_DLEN];
+        Base64Decode(json_object_get_string(jinline_data), json_object_get_string_len(jinline_data), inline_data);
+        st.st_dev = (dev_t)inline_data;
+    }
     json_object_put(json_get);
     entry->file = new file_t(entry, &st, fblocks);
     entry->flags |= ENTRY_INITED;
@@ -324,7 +332,7 @@ int entry_t::sync(int datasync){
     assert(S_ISREG(mode));
     file->sync();
     struct stat st = file->getattr();
-    if(!datasync && (st.st_ino & FILE_DIRTY)){
+    if((!datasync && (st.st_ino & FILE_DIRTY))){
         json_object *jobj = json_object_new_object();
         json_object_object_add(jobj, "size", json_object_new_int64(st.st_size));
         json_object_object_add(jobj, "ctime", json_object_new_int64(ctime));
@@ -335,11 +343,19 @@ int entry_t::sync(int datasync){
         }else{
             json_object_object_add(jobj, "encoding", json_object_new_string("none"));
         }
-        auto fblocks = file->getfblocks();
+        if(st.st_dev){
+            char* inline_data = new char[INLINE_DLEN * 2];
+            Base64Encode((const char*)st.st_dev, st.st_size, inline_data);
+            json_object_object_add(jobj, "inline_data", json_object_new_string(inline_data));
+            delete[] inline_data;
+        }
+
         json_object *jblock_list = json_object_new_array();
+        auto fblocks = file->getfblocks();
         for(auto block: fblocks){
             json_object_array_add(jblock_list, json_object_new_string(block.c_str()));
         }
+
         json_object_object_add(jobj, "block_list", jblock_list);
         const char *jstring = json_object_to_json_string(jobj);
 
