@@ -159,10 +159,10 @@ void block_t::push(block_t* b) {
         char outpath[PATHLEN];
 retry:
         int ret = HANDLE_EAGAIN(baiduapi_upload(inpath, buff, len, false, outpath));
-        free(buff);
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
+        free(buff);
         if(ret != 0){
             throw "baiduapi IO Error";
         }

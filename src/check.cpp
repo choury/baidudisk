@@ -256,7 +256,7 @@ int main(int argc, char **argv)
         path = "/";
     }
     cout << "will check path: " << path << endl;
-    creatpool(10);
+    creatpool(50);
     checkfile(strdup(path));
     waittask(0);
     return 0;

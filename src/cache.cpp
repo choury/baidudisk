@@ -360,7 +360,11 @@ int entry_t::sync(int datasync){
         const char *jstring = json_object_to_json_string(jobj);
 
         char path[PATHLEN];
+retry:
         int ret = HANDLE_EAGAIN(baiduapi_upload((getpath() + METAPATH).c_str(), jstring, strlen(jstring), true, path));
+        if(ret != 0 && errno == EEXIST){
+            goto retry;
+        }
         assert(ret == 0);
         json_object_put(jobj);
         file->post_sync();

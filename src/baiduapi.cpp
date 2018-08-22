@@ -104,6 +104,7 @@ static int handleerror(const char* file, const char *msg, size_t len) {
     case 31212:
     case 31233:
     case 31243:
+    case 31296:
     case 31299:
     case 31811:
         errno = ETIMEDOUT;
