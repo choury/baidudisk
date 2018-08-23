@@ -22,6 +22,7 @@ public:
     entry_t* insert(std::string name, entry_t* entry);
     void erase(std::string name);
     time_t getmtime();
+    size_t size();
 };
 
 #endif

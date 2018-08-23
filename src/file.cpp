@@ -369,6 +369,10 @@ int file_t::truncate(off_t offset){
     size_t newc = GetBlkNo(offset, blksize);
     size_t oldc = GetBlkNo(size, blksize);
     if(newc > oldc){
+        if(newc >= MAXFILE){
+            errno = EFBIG;
+            return -1;
+        }
         for(size_t i = oldc + 1; i<= newc; i++){
             blocks[i] = new block_t(this, "x", i, blksize * i, blksize);
         }

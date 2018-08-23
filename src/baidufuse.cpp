@@ -62,7 +62,10 @@ int baidu_mkdir(const char *path, mode_t mode){
     if(entry == nullptr){
         return -ENOENT;
     }
-    return entry->mkdir(basename(path));
+    if(entry->mkdir(basename(path)) == nullptr){
+        return -errno;
+    }
+    return 0;
 }
 
 int baidu_unlink(const char *path){
@@ -106,7 +109,7 @@ int baidu_create(const char *path, mode_t mode, struct fuse_file_info *fi){
     assert(entry);
     entry_t *nentry = entry->create(basename(path));
     if(nentry == nullptr){
-        return -EIO;
+        return -errno;
     }
     fi->fh = (uint64_t)nentry;
     fi->direct_io = 1;

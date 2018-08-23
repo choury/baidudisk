@@ -46,7 +46,7 @@ public:
     int getattr(struct stat* st);
     entry_t* find(string path);
     entry_t* create(string name);
-    int mkdir(string name);
+    entry_t* mkdir(string name);
     int open();
     const std::map<string, entry_t*>& entrys();
     int read(void* buff, off_t offset, size_t size);

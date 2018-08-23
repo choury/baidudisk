@@ -23,7 +23,7 @@ void dir_t::pull() {
     entry_t* entry = entrys["."];
     std::string path = entry->getpath();
     std::map<std::string, struct stat> smap;
-    int ret = HANDLE_EAGAIN(baiduapi_list(path.c_str(), 10000, smap));
+    int ret = HANDLE_EAGAIN(baiduapi_list(path.c_str(), MAXFILE, smap));
     if(ret != 0){
         throw "baiduapi IO Error";
     }
@@ -72,6 +72,7 @@ const std::map<string, entry_t*>& dir_t::get_entrys(){
 entry_t* dir_t::insert(string name, entry_t* entry){
     auto_wlock(this);
     assert(entrys.count(name) == 0);
+    assert(entrys.size() < MAXFILE);
     mtime = time(0);
     return entrys[name] = entry;
 }
@@ -88,3 +89,9 @@ time_t dir_t::getmtime() {
     auto_rlock(this);
     return mtime;
 }
+
+size_t dir_t::size() {
+    auto_rlock(this);
+    return entrys.size();
+}
+

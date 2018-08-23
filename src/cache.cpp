@@ -234,6 +234,10 @@ entry_t* entry_t::find(string path){
 
 entry_t* entry_t::create(string name){
     auto_rlock(this);
+    if(dir->size() >= MAXFILE){
+        errno = ENOSPC;
+        return nullptr;
+    }
     assert(S_ISDIR(mode));
     struct stat st;
     memset(&st, 0 , sizeof(st));
@@ -254,9 +258,14 @@ entry_t* entry_t::create(string name){
     return dir->insert(name, entry);
 }
 
-int entry_t::mkdir(string name) {
+entry_t* entry_t::mkdir(string name) {
     if(endwith(name, ".def")){
-        return -EINVAL;
+        errno = EINVAL;
+        return nullptr;
+    }
+    if(dir->size() >= MAXFILE){
+        errno = ENOSPC;
+        return nullptr;
     }
     auto_rlock(this);
     assert(S_ISDIR(mode));
@@ -271,10 +280,9 @@ int entry_t::mkdir(string name) {
     int ret = HANDLE_EAGAIN(baiduapi_mkdir(entry->getpath().c_str(), &st));
     if(ret){
         delete entry;
-        return ret;
+        return nullptr;
     }
-    dir->insert(name, entry);
-    return 0;
+    return dir->insert(name, entry);
 }
 
 int entry_t::open() {
@@ -410,6 +418,9 @@ void entry_t::insert(string name, entry_t* entry) {
 
 int entry_t::move(entry_t* newparent, string name) {
     auto_wlock(this);
+    if(newparent->dir->size() >= MAXFILE){
+        return -ENOSPC;
+    }
     string oldpath = getpath();
     parent->erase(this->name);
     parent = newparent;

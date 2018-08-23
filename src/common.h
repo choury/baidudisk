@@ -12,5 +12,6 @@
 #define METANAME      "meta.json"
 #define METAPATH     "/" METANAME
 
+#define MAXFILE       100000
 extern char COFPATH[];
 #endif
