@@ -221,7 +221,7 @@ CURLcode request(Http *r){
     //curl_easy_setopt(r->curl_handle, CURLOPT_FRESH_CONNECT, 1);
     if(r->timeout > 60){
         curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_LIMIT, 5);
-        curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_TIME, 30);
+        curl_easy_setopt(r->curl_handle, CURLOPT_LOW_SPEED_TIME, r->timeout/2);
     }
     if(r->range){
         curl_easy_setopt(r->curl_handle, CURLOPT_RANGE, r->range);

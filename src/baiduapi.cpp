@@ -367,6 +367,7 @@ int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct s
     buffstruct bs;
     r->writefunc = savetobuff;
     r->writeprame = &bs;
+    r->timeout = 300;
 
     int ret = request(r);
     ERROR_CHECK(ret);

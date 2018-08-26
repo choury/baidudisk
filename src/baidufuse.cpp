@@ -34,9 +34,12 @@ int baidu_readdir(const char*, void *buf, fuse_fill_dir_t filler, off_t offset, 
     entry_t* entry = (entry_t*)fi->fh;
     auto entrys = entry->entrys();
     for(auto i: entrys){
+    /*
         struct stat st;
         i.second->getattr(&st);
         filler(buf, i.first.c_str(), &st, 0);
+    */
+        filler(buf, i.first.c_str(), nullptr, 0);
     }
     return 0;
 }

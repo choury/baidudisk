@@ -20,7 +20,7 @@ class entry_t: locker {
     string name;
     mode_t mode;
     union{
-        dir_t* dir;
+        dir_t* dir = nullptr;
         file_t* file;
     };
     time_t ctime = 0;
