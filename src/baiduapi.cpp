@@ -347,7 +347,7 @@ int baiduapi_upload(const char* path, const char* input, size_t len, bool overwr
 }
 
 
-int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct stat>& stmap){
+static int baiduapi_list_low(const char* path, off_t offset, size_t limit, std::map<std::string, struct stat>& stmap){
     char buff[2048];
     char fullpath[PATHLEN];
     sprintf(fullpath, "%s%s", basepath, path);
@@ -355,12 +355,12 @@ int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct s
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=list&"
-             "limit=0-%zu&"
+             "limit=%ld-%zu&"
              "by=time&"
              "order=desc&"
              "access_token=%s&"
              "path=%s"
-             , limit, Access_Token, URLEncode(fullpath).c_str());
+             , offset, limit, Access_Token, URLEncode(fullpath).c_str());
 
     Http *r = Httpinit(buff);
     r->method = Httprequest::get;
@@ -426,6 +426,21 @@ int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct s
         stmap[bpath] = st;
     }
     json_object_put(json_get);
+    return 0;
+}
+
+int baiduapi_list(const char* path, std::map<std::string, struct stat>& stmap){
+    const int step = 10000;
+    assert(stmap.empty());
+    size_t len  = 0;
+    do{
+        len = stmap.size();
+        int ret = HANDLE_EAGAIN(baiduapi_list_low(path, len, len + step, stmap));
+        if(ret){
+            return ret;
+        }
+        assert(stmap.size() - len <= step);
+    }while(stmap.size() - len == step);
     return 0;
 }
 

@@ -207,6 +207,7 @@ static void releasecurl(CURL *curl){
 }
 
 CURLcode request(Http *r){
+//    errorlog("request: %s\n", r->url);
     
     struct curl_httppost *post = NULL;
     struct curl_httppost *last = NULL;

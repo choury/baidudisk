@@ -23,7 +23,7 @@ void dir_t::pull() {
     entry_t* entry = entrys["."];
     std::string path = entry->getpath();
     std::map<std::string, struct stat> smap;
-    int ret = HANDLE_EAGAIN(baiduapi_list(path.c_str(), MAXFILE, smap));
+    int ret = HANDLE_EAGAIN(baiduapi_list(path.c_str(), smap));
     if(ret != 0){
         throw "baiduapi IO Error";
     }

@@ -49,10 +49,9 @@ void prefetch() {
             pthread_mutex_unlock(&readlock);
             continue;
         }
-        block_t* b = readlist.front();
+        addtask((taskfunc)block_t::pull, readlist.front(), 0, 0);
         readlist.pop_front();
         pthread_mutex_unlock(&readlock);
-        b->pull();
     }
 }
 
@@ -82,9 +81,7 @@ void writeback(){
 
 void start_prefetch() {
     sem_init(&read_sem, 0, 0);
-    for(int i = 0; i < THREADS/2; i++){
-        addtask((taskfunc)prefetch, nullptr, 0, 0);
-    }
+    addtask((taskfunc)prefetch, nullptr, 0, 0);
 }
 
 void start_writeback(){
@@ -128,21 +125,23 @@ block_t::~block_t() {
     file->trim(name);
 }
 
-int block_t::pull() {
-    auto_wlock(this);
-    if(flags & BLOCK_SYNC){
-        return 0;
+void block_t::pull(block_t* b) {
+    string path = b->file->getpath();
+    auto_wlock(b);
+    if(b->flags & BLOCK_SYNC){
+        return;
     }
-    buffstruct bs((char*)malloc(size), size);
+    buffstruct bs((char*)malloc(b->size), b->size);
     //for chunk file, read from begin
-    off_t startp = name.size() ? 0 : offset;
-    int ret = HANDLE_EAGAIN(baiduapi_download((file->getpath()+"/"+name).c_str(), startp, size, bs));
-    assert(bs.offset <= (size_t)size);
+    off_t startp = b->name.size() ? 0 : b->offset;
+    int ret = HANDLE_EAGAIN(baiduapi_download((path+"/"+b->name).c_str(), startp, b->size, bs));
+    assert(bs.offset <= (size_t)b->size);
     if(ret == 0){
-        file->putbuffer(bs.buf, offset, bs.offset);
-        flags |= BLOCK_SYNC;
+        b->file->putbuffer(bs.buf, b->offset, bs.offset);
+        b->flags |= BLOCK_SYNC;
+    }else{
+        throw "baiduapi IO Error";
     }
-    return ret;
 }
 
 void block_t::push(block_t* b) {
@@ -176,9 +175,7 @@ retry:
 
 void block_t::prefetch(bool wait) {
     if(wait){
-        if(pull()){
-            throw "baiduapi IO Error";
-        }
+        pull(this);
         return;
     }
     if(tryrlock()){
@@ -190,9 +187,9 @@ void block_t::prefetch(bool wait) {
     }
     unrlock();
     pthread_mutex_lock(&readlock);
-    if(!findinqueue(readlist, this) && readlist.size() <= THREADS/2){
-        sem_post(&read_sem);
+    if(!findinqueue(readlist, this) && readlist.size() <= THREADS/4){
         readlist.push_back(this);
+        sem_post(&read_sem);
     }
     pthread_mutex_unlock(&readlock);
 }
@@ -528,3 +525,4 @@ void file_t::setmtime(time_t mtime) {
     flags |= FILE_DIRTY;
     this->mtime = mtime;
 }
+

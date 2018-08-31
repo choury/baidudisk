@@ -126,7 +126,7 @@ void checkchunk(char *pathStr) {
     string path = pathStr;
     free(pathStr);
     std::map<std::string, struct stat> files;
-    int ret  = HANDLE_EAGAIN(baiduapi_list(path.c_str(), MAXFILE, files));
+    int ret  = HANDLE_EAGAIN(baiduapi_list(path.c_str(), files));
     if (ret != 0) {
         cerr<<lock<< "list dir "<<path<<" failed: "<<ret<<endl<<unlock;
         return;
@@ -208,7 +208,7 @@ void checkfile(char* pathStr) {
     string path = pathStr;
     free(pathStr);
     std::map<std::string, struct stat> files;
-    int ret  = HANDLE_EAGAIN(baiduapi_list(path.c_str(), MAXFILE, files));
+    int ret  = HANDLE_EAGAIN(baiduapi_list(path.c_str(), files));
     if (ret != 0) {
         cerr<<lock<< "list dir "<<path<<" failed: "<<ret<<endl<<unlock;
         return;
@@ -256,7 +256,7 @@ int main(int argc, char **argv)
         path = "/";
     }
     cout << "will check path: " << path << endl;
-    creatpool(50);
+    creatpool(100);
     checkfile(strdup(path));
     waittask(0);
     return 0;

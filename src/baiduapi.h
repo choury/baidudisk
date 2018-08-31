@@ -19,7 +19,7 @@ void baiduapi_prepare();
 int baiduapi_statfs(const char *path, struct statvfs *sf);
 int baiduapi_download(const char* path, size_t startp, size_t len, buffstruct& bs);
 int baiduapi_upload(const char* path, const char* input, size_t len, bool overwrite, char outpath[PATHLEN]);
-int baiduapi_list(const char* path, size_t limit, std::map<std::string, struct stat>& stmap);
+int baiduapi_list(const char* path, std::map<std::string, struct stat>& stmap);
 int baiduapi_getattr(const char *path, struct stat *st);
 int baiduapi_mkdir(const char *path, struct stat* st);
 int baiduapi_delete(const char *path);

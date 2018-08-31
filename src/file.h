@@ -19,8 +19,8 @@ class block_t: locker {
 #define BLOCK_DIRTY  2
     unsigned int flags = 0;
     time_t atime;
-    int pull();
     int staled();
+    static void pull(block_t* b);
     static void push(block_t* b);
     friend void prefetch();
     friend void writeback();
