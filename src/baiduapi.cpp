@@ -6,12 +6,14 @@
 
 #include <json-c/json.h>
 
-#include "baiduapi.h"
+#include "fmdisk.h"
 #include "net.h"
 
-static const char *basepath = "/apps/Native";
-static const char *sk = "wiz77wrFfUGje0oGGOaG3kOU7T18dSg2";
-static const char *confpath;
+static const char* basepath = "/apps/Native";
+static const char* api_ak =  "iN1yzFR9Sos27UWGEpjvKNVs";
+static const char* sk = "wiz77wrFfUGje0oGGOaG3kOU7T18dSg2";
+static char confpath[4096];
+
 
 static char Access_Token[100];
 
@@ -140,7 +142,6 @@ static int baiduapi_gettoken(const char* confpath) {
     char buff[1024];
     char ATfile[1024];
     json_object *json_get;
-    ::confpath = confpath;
 
     sprintf(ATfile,"%s/Access_Token", confpath);
     if (!(json_get = json_object_from_file(ATfile))) {                     //如果当前目录下面没有.Access_Token文件，那么重新获取
@@ -151,7 +152,7 @@ static int baiduapi_gettoken(const char* confpath) {
                "client_id=%s&"
                "redirect_uri=oob&"
                "scope=netdisk&"
-               "display=page\n", API_AK);
+               "display=page\n", api_ak);
         puts("please open the url above,and copy the authorization code from the browser:");
         scanf("%199s", code);
         sprintf(buff,
@@ -161,7 +162,7 @@ static int baiduapi_gettoken(const char* confpath) {
                 "client_id=%s&"
                 "client_secret=%s&"
                 "redirect_uri=oob"
-                , code, API_AK, sk);
+                , code, api_ak, sk);
 
         Http *r = Httpinit(buff);
         r->method = Httprequest::get;
@@ -216,7 +217,7 @@ static int baiduapi_refreshtoken() {
                  "grant_type=refresh_token&"
                  "refresh_token=%s&"
                  "client_id=%s&"
-                 "client_secret=%s", Refresh_Token, API_AK, sk);
+                 "client_secret=%s", Refresh_Token, api_ak, sk);
         FILE *tpfile = tmpfile();
 
         if (!tpfile) {
@@ -257,15 +258,17 @@ static int baiduapi_refreshtoken() {
     return 0;
 }
 
-void baiduapi_prepare(){
+int fm_prepare(){
     netinit();
-    setCOFPATH();
-    while(baiduapi_gettoken(COFPATH));
+    sprintf(confpath, "%s/.baidudisk", getenv("HOME"));
+    mkdir(confpath, 0700);
+    while(baiduapi_gettoken(confpath));
+    return 0;
 }
 
 
 //从服务器读一个block
-int baiduapi_download(const char* path, size_t startp, size_t len, buffstruct& bs) {
+int fm_download(const char* path, size_t startp, size_t len, buffstruct& bs) {
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
@@ -293,7 +296,7 @@ int baiduapi_download(const char* path, size_t startp, size_t len, buffstruct& b
     return 0;
 }
 
-int baiduapi_upload(const char* path, const char* input, size_t len, bool overwrite, char outpath[PATHLEN]) {
+int fm_upload(const char* path, const char* input, size_t len, bool overwrite, char outpath[PATHLEN]) {
     char buff[1024];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
@@ -347,7 +350,7 @@ int baiduapi_upload(const char* path, const char* input, size_t len, bool overwr
 }
 
 
-static int baiduapi_list_low(const char* path, off_t offset, size_t limit, std::map<std::string, struct stat>& stmap){
+static int baiduapi_list(const char* path, off_t offset, size_t limit, std::map<std::string, struct stat>& stmap){
     char buff[2048];
     char fullpath[PATHLEN];
     sprintf(fullpath, "%s%s", basepath, path);
@@ -429,13 +432,13 @@ static int baiduapi_list_low(const char* path, off_t offset, size_t limit, std::
     return 0;
 }
 
-int baiduapi_list(const char* path, std::map<std::string, struct stat>& stmap){
+int fm_list(const char* path, std::map<std::string, struct stat>& stmap){
     const int step = 10000;
     assert(stmap.empty());
     size_t len  = 0;
     do{
         len = stmap.size();
-        int ret = HANDLE_EAGAIN(baiduapi_list_low(path, len, len + step, stmap));
+        int ret = HANDLE_EAGAIN(baiduapi_list(path, len, len + step, stmap));
         if(ret){
             return ret;
         }
@@ -446,7 +449,7 @@ int baiduapi_list(const char* path, std::map<std::string, struct stat>& stmap){
 
 
 //获得文件属性……
-int baiduapi_getattr(const char *path, struct stat *st) {
+int fm_getattr(const char *path, struct stat *st) {
     memset(st, 0, sizeof(struct stat));
     st->st_nlink = 1;
 
@@ -515,7 +518,7 @@ int baiduapi_getattr(const char *path, struct stat *st) {
 
 
 //获得文件系统信息，对于百度网盘来说，只有容量是有用的……
-int baiduapi_statfs(const char *path, struct statvfs *sf) {
+int fm_statfs(const char *path, struct statvfs *sf) {
     char buff[1025];
     sprintf(buff,
             "https://pcs.baidu.com/rest/2.0/pcs/quota?"
@@ -557,7 +560,7 @@ int baiduapi_statfs(const char *path, struct statvfs *sf) {
 
 
 //自猜
-int baiduapi_mkdir(const char *path, struct stat* st) {
+int fm_mkdir(const char *path, struct stat* st) {
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
@@ -609,7 +612,7 @@ int baiduapi_mkdir(const char *path, struct stat* st) {
 
 
 //删除文件
-int baiduapi_delete(const char *path) {
+int fm_delete(const char *path) {
     char buff[2048];
     char fullpath[PATHLEN];
     snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
@@ -632,7 +635,7 @@ int baiduapi_delete(const char *path) {
 }
 
 
-int baiduapi_batchdelete(std::set<std::string> flist){
+int fm_batchdelete(std::set<std::string> flist){
 retry:
     char buff[2048];
     snprintf(buff, sizeof(buff) - 1,
@@ -680,7 +683,7 @@ retry:
 
 /* 想猜你就继续猜吧
  */
-int baiduapi_rename(const char *oldname, const char *newname) {
+int fm_rename(const char *oldname, const char *newname) {
     char buff[3096];
     char oldfullpath[PATHLEN];
     char newfullpath[PATHLEN];
@@ -702,4 +705,16 @@ int baiduapi_rename(const char *oldname, const char *newname) {
     int ret = request(r);
     ERROR_CHECK(ret);
     return 0;
+}
+
+const char* fm_getsecret(){
+    return api_ak;
+}
+
+const char* fm_getcachepath(){
+    return confpath;
+}
+
+int main(int argc, char* argv[]){
+    return fm_main(argc, argv);
 }
