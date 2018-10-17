@@ -3,7 +3,9 @@ baidudisk
 
 a client of baidudisk for linux
 
-** base on fmdisk **
+**base on [fmdisk](//github.com/choury/fmdisk)**
+
+**自己从其他地方上传的文件可以正常读取,但是显示为只读文件，本程序上传的文件只能由本程序读写，并不能由其他程序读写**
 
 * 由于百度api的限制 [参阅](http://developer.baidu.com/wiki/index.php?title=docs/pcs)，该程序只能处理/apps/Native下面的文件，在网页上显示为 我的应用数据/Native, 你可以把要处理的文件全部都挪到这个文件下面
 
