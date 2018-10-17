@@ -13,5 +13,5 @@ set(CMAKE_CXX_FLAGS "-std=c++11 -Wall -ggdb -O0")
 #set(CMAKE_CXX_FLAGS "-std=c++11 -Wall -O2 -DNDEBUG -ggdb")
 
 add_subdirectory(fmdisk)
-add_executable(baidudisk src/baiduapi.cpp src/net.c)
-target_link_libraries(baidudisk fmdisk)
+add_executable(baidudisk baidudisk.cpp net.c)
+target_link_libraries(baidudisk fmdisk curl ssl crypto)
