@@ -111,6 +111,9 @@ static int handleerror(const char* file, const char *msg, size_t len) {
     case 31811:
         errno = ETIMEDOUT;
         break;
+    case 31326:
+        errno = ETOOMANYREFS;
+        break;
 
     default:
         errorlog("No defined errno:%d\n", error);
@@ -268,10 +271,10 @@ int fm_prepare(){
 
 
 //从服务器读一个block
-int fm_download(const char* path, size_t startp, size_t len, buffstruct& bs) {
+int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs) {
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, file.path.c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=download&"
@@ -296,10 +299,10 @@ int fm_download(const char* path, size_t startp, size_t len, buffstruct& bs) {
     return 0;
 }
 
-int fm_upload(const char* path, const char* input, size_t len, bool overwrite, char outpath[PATHLEN]) {
+int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len, bool overwrite) {
     char buff[1024];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s/%s", basepath, fileat.path.c_str(), basename(file.path).c_str());
     if(overwrite){
         snprintf(buff, sizeof(buff) - 1,
                 "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -317,7 +320,7 @@ int fm_upload(const char* path, const char* input, size_t len, bool overwrite, c
                 "ondup=newcopy"
                 , Access_Token, URLEncode(fullpath).c_str());
     }
-    buffstruct read_bs((const char*)input, len);
+    buffstruct read_bs((const char*)data, len);
     Http *r = Httpinit(buff);
     r->method = Httprequest::post_formdata;
     r->readfunc = readfrombuff;
@@ -339,21 +342,23 @@ int fm_upload(const char* path, const char* input, size_t len, bool overwrite, c
     }
 
     json_object *jpath;
-    if (json_object_object_get_ex(json_get, "path", &jpath)) {
-        strcpy(outpath, json_object_get_string(jpath) + strlen(basepath));
-        json_object_put(json_get);
-        return 0;
-    } else {
-        errorlog("Did not get path:%s\n", json_object_to_json_string(json_get));
-        return -EPROTO;
-    }
+    ret = json_object_object_get_ex(json_get, "path", &jpath);
+    assert(ret);
+    file.path = json_object_get_string(jpath) + strlen(basepath);
+
+    json_object *jfs_id;
+    ret = json_object_object_get_ex(json_get, "fs_id", &jfs_id);
+    assert(ret);
+    file.private_key = (void*)json_object_get_int64(jfs_id);
+    json_object_put(json_get);
+    return 0;
 }
 
 
-static int baiduapi_list(const char* path, off_t offset, size_t limit, std::map<std::string, struct stat>& stmap){
+static int baiduapi_list(const filekey& file, off_t offset, size_t limit, std::vector<struct filemeta>& flist){
     char buff[2048];
     char fullpath[PATHLEN];
-    sprintf(fullpath, "%s%s", basepath, path);
+    sprintf(fullpath, "%s%s", basepath, file.path.c_str());
 
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
@@ -387,75 +392,71 @@ static int baiduapi_list(const char* path, off_t offset, size_t limit, std::map<
     assert(ret);
 
     for (int i = 0; i < json_object_array_length(jlist); ++i) {
-        struct stat st;
-        memset(&st, 0, sizeof(struct stat));
-        st.st_nlink = 1;
         json_object *filenode = json_object_array_get_idx(jlist, i);
-
-        json_object *jmtime;
-        ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
+        struct filemeta meta;
+        json_object *jpath;
+        ret = json_object_object_get_ex(filenode, "path", &jpath);
         assert(ret);
-        st.st_mtime = json_object_get_int64(jmtime);
-
-        json_object *jctime;
-        ret = json_object_object_get_ex(filenode, "ctime",&jctime);
-        assert(ret);
-        st.st_ctime = json_object_get_int64(jctime);
+        meta.key.path = json_object_get_string(jpath) + strlen(basepath);
 
         json_object *jfs_id;
         ret = json_object_object_get_ex(filenode, "fs_id",&jfs_id);
         assert(ret);
-        st.st_ino = json_object_get_int64(jfs_id);
+        meta.key.private_key =  (void*)json_object_get_int64(jfs_id);
+
+        json_object *jmtime;
+        ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
+        assert(ret);
+        meta.mtime = json_object_get_int64(jmtime);
+
+        json_object *jctime;
+        ret = json_object_object_get_ex(filenode, "ctime",&jctime);
+        assert(ret);
+        meta.ctime = json_object_get_int64(jctime);
+
 
         json_object *jsize;
         ret = json_object_object_get_ex(filenode, "size",&jsize);
         assert(ret);
-        st.st_size = json_object_get_int64(jsize);
-        st.st_blksize = BLOCKLEN;
+        meta.size = json_object_get_int64(jsize);
+        meta.blksize = BLOCKLEN;
 
         json_object *jisdir;
         ret = json_object_object_get_ex(filenode, "isdir",&jisdir);
         assert(ret);
         if (json_object_get_boolean(jisdir)) {
-            st.st_mode = S_IFDIR | 0755;
+            meta.mode = S_IFDIR | 0755;
         } else {
-            st.st_mode = S_IFREG | 0444;
+            meta.mode = S_IFREG | 0444;
         }
-
-        json_object *jpath;
-        ret = json_object_object_get_ex(filenode, "path", &jpath);
-        assert(ret);
-        const char *bpath = json_object_get_string(jpath) + strlen(basepath);
-        stmap[bpath] = st;
+        meta.flags = 0;
+        flist.push_back(meta);
     }
     json_object_put(json_get);
     return 0;
 }
 
-int fm_list(const char* path, std::map<std::string, struct stat>& stmap){
+int fm_list(const filekey& file, std::vector<struct filemeta>& flist){
     const int step = 10000;
-    assert(stmap.empty());
+    assert(flist.empty());
     size_t len  = 0;
     do{
-        len = stmap.size();
-        int ret = HANDLE_EAGAIN(baiduapi_list(path, len, len + step, stmap));
+        len = flist.size();
+        int ret = HANDLE_EAGAIN(baiduapi_list(file, len, len + step, flist));
         if(ret){
             return ret;
         }
-        assert(stmap.size() - len <= step);
-    }while(stmap.size() - len == step);
+        assert(flist.size() - len <= step);
+    }while(flist.size() - len == step);
     return 0;
 }
 
 
 //获得文件属性……
-int fm_getattr(const char *path, struct stat *st) {
-    memset(st, 0, sizeof(struct stat));
-    st->st_nlink = 1;
-
+int fm_getattr(const filekey& file, struct filemeta& meta) {
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, file.path.c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=meta&"
@@ -483,34 +484,40 @@ int fm_getattr(const char *path, struct stat *st) {
     assert(ret);
     json_object* filenode = json_object_array_get_idx(jlist, 0);
 
-    json_object *jmtime;
-    ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
+    json_object *jpath;
+    ret = json_object_object_get_ex(filenode, "path",&jpath);
     assert(ret);
-    st->st_mtim.tv_sec = json_object_get_int64(jmtime);
-
-    json_object *jctime;
-    ret = json_object_object_get_ex(filenode, "ctime",&jctime);
-    assert(ret);
-    st->st_ctim.tv_sec = json_object_get_int64(jctime);
+    meta.key.path = json_object_get_string(jpath) + strlen(basepath);
 
     json_object *jfs_id;
     ret = json_object_object_get_ex(filenode, "fs_id",&jfs_id);
     assert(ret);
-    st->st_ino = json_object_get_int64(jfs_id);
+    meta.key.private_key = (void*)json_object_get_int64(jfs_id);
+
+    json_object *jmtime;
+    ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
+    assert(ret);
+    meta.mtime = json_object_get_int64(jmtime);
+
+    json_object *jctime;
+    ret = json_object_object_get_ex(filenode, "ctime",&jctime);
+    assert(ret);
+    meta.ctime = json_object_get_int64(jctime);
+
 
     json_object *jsize;
     ret = json_object_object_get_ex(filenode, "size",&jsize);
     assert(ret);
-    st->st_size = json_object_get_int64(jsize);
-    st->st_blksize = BLOCKLEN;
+    meta.size = json_object_get_int64(jsize);
+    meta.blksize = BLOCKLEN;
 
     json_object *jisdir;
     ret = json_object_object_get_ex(filenode, "isdir",&jisdir);
     assert(ret);
     if (json_object_get_boolean(jisdir)) {
-        st->st_mode = S_IFDIR | 0755;                        //文件：只读，想要写，对不起，先拷贝一份下来，然后覆盖
+        meta.mode = S_IFDIR | 0755;                        //文件：只读，想要写，对不起，先拷贝一份下来，然后覆盖
     } else {
-        st->st_mode = S_IFREG | 0444;
+        meta.mode = S_IFREG | 0444;
     }
     json_object_put(json_get);
     return 0;
@@ -518,7 +525,7 @@ int fm_getattr(const char *path, struct stat *st) {
 
 
 //获得文件系统信息，对于百度网盘来说，只有容量是有用的……
-int fm_statfs(const char *path, struct statvfs *sf) {
+int fm_statfs(struct statvfs *sf) {
     char buff[1025];
     sprintf(buff,
             "https://pcs.baidu.com/rest/2.0/pcs/quota?"
@@ -560,10 +567,10 @@ int fm_statfs(const char *path, struct statvfs *sf) {
 
 
 //自猜
-int fm_mkdir(const char *path, struct stat* st) {
+int fm_mkdir(const filekey& fileat, struct filekey& file) {
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s/%s", basepath, fileat.path.c_str(), basename(file.path).c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=mkdir&"
@@ -588,34 +595,26 @@ int fm_mkdir(const char *path, struct stat* st) {
         return -EPROTO;
     }
 
-    memset(st, 0, sizeof(struct stat));
-    st->st_nlink = 1;
+    json_object *jpath;
+    ret = json_object_object_get_ex(json_get, "path",&jpath);
+    assert(ret);
+    file.path = json_object_get_string(jpath) + strlen(basepath);
+
     json_object *jfs_id;
     ret = json_object_object_get_ex(json_get, "fs_id",&jfs_id);
     assert(ret);
-    st->st_ino = json_object_get_int64(jfs_id);
-    
-    json_object *jmtime;
-    ret = json_object_object_get_ex(json_get, "mtime",&jmtime);
-    assert(ret);
-    st->st_mtime = json_object_get_int64(jmtime);
-    
-    json_object *jctime;
-    ret = json_object_object_get_ex(json_get, "ctime",&jctime);
-    assert(ret);
-    st->st_ctime = json_object_get_int64(jctime);
-    
-    st->st_mode = S_IFDIR | 0755;
+    file.private_key = (void*)json_object_get_int64(jfs_id);
+
     json_object_put(json_get);
     return 0;
 }
 
 
 //删除文件
-int fm_delete(const char *path) {
+int fm_delete(const filekey& file) {
     char buff[2048];
     char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, path);
+    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, file.path.c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=delete&"
@@ -635,7 +634,7 @@ int fm_delete(const char *path) {
 }
 
 
-int fm_batchdelete(std::set<std::string> flist){
+int fm_batchdelete(std::vector<struct filekey> flist){
 retry:
     char buff[2048];
     snprintf(buff, sizeof(buff) - 1,
@@ -649,7 +648,7 @@ retry:
     for(auto i =  flist.begin(); i != flist.end();) {
         json_object *jpath = json_object_new_object();
         char path[PATHLEN];
-        sprintf(path, "%s/%s", basepath, i->c_str());
+        sprintf(path, "%s/%s", basepath, i->path.c_str());
         json_object_object_add(jpath, "path", json_object_new_string(path));
         json_object_array_add(jarray, jpath);
         i = flist.erase(i);
@@ -683,12 +682,12 @@ retry:
 
 /* 想猜你就继续猜吧
  */
-int fm_rename(const char *oldname, const char *newname) {
+int fm_rename(const filekey& oldfile, const filekey& fileat, filekey& newfile) {
     char buff[3096];
     char oldfullpath[PATHLEN];
     char newfullpath[PATHLEN];
-    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s", basepath, oldname);
-    snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s", basepath, newname);
+    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s", basepath, oldfile.path.c_str());
+    snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s/%s", basepath, fileat.path.c_str(), basename(newfile.path).c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=move&"
@@ -704,7 +703,11 @@ int fm_rename(const char *oldname, const char *newname) {
     r->writeprame = &bs;
     int ret = request(r);
     ERROR_CHECK(ret);
+    newfile.private_key = oldfile.private_key;
     return 0;
+}
+
+void fm_release_private_key(void*){
 }
 
 const char* fm_getsecret(){
@@ -715,6 +718,3 @@ const char* fm_getcachepath(){
     return confpath;
 }
 
-int main(int argc, char* argv[]){
-    return fm_main(argc, argv);
-}
