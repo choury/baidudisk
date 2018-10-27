@@ -523,6 +523,10 @@ int fm_getattr(const filekey& file, struct filemeta& meta) {
     return 0;
 }
 
+int fm_getattrat(const filekey& fileat, struct filekey& file) {
+    file.path = fileat.path+"/"+file.path;
+    return 0;
+}
 
 //获得文件系统信息，对于百度网盘来说，只有容量是有用的……
 int fm_statfs(struct statvfs *sf) {
@@ -682,12 +686,12 @@ retry:
 
 /* 想猜你就继续猜吧
  */
-int fm_rename(const filekey& oldfile, const filekey& fileat, filekey& newfile) {
+int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile) {
     char buff[3096];
     char oldfullpath[PATHLEN];
     char newfullpath[PATHLEN];
-    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s", basepath, oldfile.path.c_str());
-    snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s/%s", basepath, fileat.path.c_str(), basename(newfile.path).c_str());
+    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s/%s", basepath, oldat.path.c_str(), basename(file.path).c_str());
+    snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s/%s", basepath, newat.path.c_str(), basename(newfile.path).c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=move&"
@@ -703,8 +707,16 @@ int fm_rename(const filekey& oldfile, const filekey& fileat, filekey& newfile) {
     r->writeprame = &bs;
     int ret = request(r);
     ERROR_CHECK(ret);
-    newfile.private_key = oldfile.private_key;
+    newfile.private_key = file.private_key;
     return 0;
+}
+
+void* fm_get_private_key(const char* private_key_str){
+    return (void*)(long)atoi(private_key_str);
+}
+
+std::string fm_private_key_tostring(const void* private_key){
+    return std::to_string((long)private_key);
 }
 
 void fm_release_private_key(void*){
