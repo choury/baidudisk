@@ -349,7 +349,7 @@ int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len
     json_object *jfs_id;
     ret = json_object_object_get_ex(json_get, "fs_id", &jfs_id);
     assert(ret);
-    file.private_key = (void*)json_object_get_int64(jfs_id);
+    file.private_key = std::shared_ptr<void>((void*)json_object_get_int64(jfs_id), [](void*){});
     json_object_put(json_get);
     return 0;
 }
@@ -402,7 +402,7 @@ static int baiduapi_list(const filekey& file, off_t offset, size_t limit, std::v
         json_object *jfs_id;
         ret = json_object_object_get_ex(filenode, "fs_id",&jfs_id);
         assert(ret);
-        meta.key.private_key =  (void*)json_object_get_int64(jfs_id);
+        meta.key.private_key =  std::shared_ptr<void>((void*)json_object_get_int64(jfs_id), [](void*){});
 
         json_object *jmtime;
         ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
@@ -492,7 +492,7 @@ int fm_getattr(const filekey& file, struct filemeta& meta) {
     json_object *jfs_id;
     ret = json_object_object_get_ex(filenode, "fs_id",&jfs_id);
     assert(ret);
-    meta.key.private_key = (void*)json_object_get_int64(jfs_id);
+    meta.key.private_key = std::shared_ptr<void>((void*)json_object_get_int64(jfs_id), [](void*){});
 
     json_object *jmtime;
     ret = json_object_object_get_ex(filenode, "mtime",&jmtime);
@@ -607,7 +607,7 @@ int fm_mkdir(const filekey& fileat, struct filekey& file) {
     json_object *jfs_id;
     ret = json_object_object_get_ex(json_get, "fs_id",&jfs_id);
     assert(ret);
-    file.private_key = (void*)json_object_get_int64(jfs_id);
+    file.private_key = std::shared_ptr<void>((void*)json_object_get_int64(jfs_id), [](void*){});
 
     json_object_put(json_get);
     return 0;
@@ -711,12 +711,12 @@ int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, f
     return 0;
 }
 
-void* fm_get_private_key(const char* private_key_str){
-    return (void*)(long)atoi(private_key_str);
+std::shared_ptr<void> fm_get_private_key(const char* private_key_str){
+    return std::shared_ptr<void>((void*)(long)atoi(private_key_str), [](void*){});
 }
 
-std::string fm_private_key_tostring(const void* private_key){
-    return std::to_string((long)private_key);
+std::string fm_private_key_tostring(std::shared_ptr<void> private_key){
+    return std::to_string((long)private_key.get());
 }
 
 void fm_release_private_key(void*){
