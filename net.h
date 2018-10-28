@@ -1,8 +1,9 @@
+#ifndef __NET_H__
+#define __NET_H__
+
 #include <curl/curl.h>
 #include <stdint.h>
 #include <syslog.h>
-#ifndef __NET_H__
-#define __NET_H__
 
 #ifdef __cplusplus
 extern "C" {

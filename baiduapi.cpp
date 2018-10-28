@@ -524,7 +524,7 @@ int fm_getattr(const filekey& file, struct filemeta& meta) {
 }
 
 int fm_getattrat(const filekey& fileat, struct filekey& file) {
-    file.path = fileat.path+"/"+file.path;
+    file.path = pathjoin(fileat.path, file.path);
     return 0;
 }
 
