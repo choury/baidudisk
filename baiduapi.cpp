@@ -131,7 +131,6 @@ static int handleerror(const char* file, const char *msg, size_t len) {
         return ret; \
     }\
     if(ret != CURLE_OK) { \
-        errorlog("network error:%d\n", ret); \
         errno = EAGAIN; \
         return -EPROTO; \
     }
@@ -164,8 +163,8 @@ static int baiduapi_gettoken(const char* confpath) {
                 "code=%s&"
                 "client_id=%s&"
                 "client_secret=%s&"
-                "redirect_uri=oob"
-                , code, api_ak, sk);
+                "redirect_uri=oob",
+                code, api_ak, sk);
 
         Http *r = Httpinit(buff);
         r->method = Httprequest::get;
@@ -273,14 +272,12 @@ int fm_prepare(){
 //从服务器读一个block
 int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs) {
     char buff[2048];
-    char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, file.path.c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=download&"
              "access_token=%s&"
-             "path=%s"
-             , Access_Token, URLEncode(fullpath).c_str());
+             "path=%s",
+             Access_Token, URLEncode(pathjoin(basepath, file.path)).c_str());
     bs.offset = 0;
     Http *r = Httpinit(buff);
     r->method = Httprequest::get;
@@ -301,24 +298,22 @@ int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs) 
 
 int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len, bool overwrite) {
     char buff[1024];
-    char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s/%s", basepath, fileat.path.c_str(), basename(file.path).c_str());
     if(overwrite){
         snprintf(buff, sizeof(buff) - 1,
                 "https://pcs.baidu.com/rest/2.0/pcs/file?"
                 "method=upload&"
                 "access_token=%s&"
                 "path=%s&"
-                "ondup=overwrite"
-                , Access_Token, URLEncode(fullpath).c_str());
+                "ondup=overwrite",
+                 Access_Token, URLEncode(pathjoin(basepath, fileat.path, basename(file.path))).c_str());
     }else{
         snprintf(buff, sizeof(buff) - 1,
                 "https://pcs.baidu.com/rest/2.0/pcs/file?"
                 "method=upload&"
                 "access_token=%s&"
                 "path=%s&"
-                "ondup=newcopy"
-                , Access_Token, URLEncode(fullpath).c_str());
+                "ondup=newcopy",
+                 Access_Token, URLEncode(pathjoin(basepath, fileat.path, basename(file.path))).c_str());
     }
     buffstruct read_bs((const char*)data, len);
     Http *r = Httpinit(buff);
@@ -357,9 +352,6 @@ int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len
 
 static int baiduapi_list(const filekey& file, off_t offset, size_t limit, std::vector<struct filemeta>& flist){
     char buff[2048];
-    char fullpath[PATHLEN];
-    sprintf(fullpath, "%s%s", basepath, file.path.c_str());
-
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=list&"
@@ -367,8 +359,8 @@ static int baiduapi_list(const filekey& file, off_t offset, size_t limit, std::v
              "by=time&"
              "order=desc&"
              "access_token=%s&"
-             "path=%s"
-             , offset, limit, Access_Token, URLEncode(fullpath).c_str());
+             "path=%s",
+             offset, limit, Access_Token, URLEncode(pathjoin(basepath, file.path)).c_str());
 
     Http *r = Httpinit(buff);
     r->method = Httprequest::get;
@@ -455,14 +447,12 @@ int fm_list(const filekey& file, std::vector<struct filemeta>& flist){
 //获得文件属性……
 int fm_getattr(const filekey& file, struct filemeta& meta) {
     char buff[2048];
-    char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, file.path.c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=meta&"
              "access_token=%s&"
              "path=%s",
-             Access_Token, URLEncode(fullpath).c_str());
+             Access_Token, URLEncode(pathjoin(basepath, file.path)).c_str());
 
     Http *r = Httpinit(buff);
     r->method = Httprequest::get;
@@ -573,14 +563,12 @@ int fm_statfs(struct statvfs *sf) {
 //自猜
 int fm_mkdir(const filekey& fileat, struct filekey& file) {
     char buff[2048];
-    char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s/%s", basepath, fileat.path.c_str(), basename(file.path).c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=mkdir&"
              "access_token=%s&"
-             "path=%s"
-             , Access_Token, URLEncode(fullpath).c_str());
+             "path=%s",
+             Access_Token, URLEncode(pathjoin(basepath, fileat.path, file.path)).c_str());
 
 
     Http *r = Httpinit(buff);
@@ -617,14 +605,12 @@ int fm_mkdir(const filekey& fileat, struct filekey& file) {
 //删除文件
 int fm_delete(const filekey& file) {
     char buff[2048];
-    char fullpath[PATHLEN];
-    snprintf(fullpath, sizeof(fullpath) - 1, "%s%s", basepath, file.path.c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=delete&"
              "access_token=%s&"
-             "path=%s"
-             , Access_Token, URLEncode(fullpath).c_str());
+             "path=%s",
+             Access_Token, URLEncode(pathjoin(basepath, file.path)).c_str());
 
     Http *r = Httpinit(buff);
     r->method = Httprequest::get;
@@ -673,6 +659,7 @@ retry:
     json_object_put(jobj);
 
     replaceAll(param, "+", "\\u002b");
+    replaceAll(param, "&", "\\u0026");
     buffstruct read_bs(param.data(), (size_t)param.size());
     Http *r = Httpinit(buff);
     r->method = Httprequest::post_x_www_form_urlencoded;
@@ -696,17 +683,15 @@ retry:
  */
 int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile) {
     char buff[3096];
-    char oldfullpath[PATHLEN];
-    char newfullpath[PATHLEN];
-    snprintf(oldfullpath, sizeof(oldfullpath) - 1, "%s%s/%s", basepath, oldat.path.c_str(), basename(file.path).c_str());
-    snprintf(newfullpath, sizeof(newfullpath) - 1, "%s%s/%s", basepath, newat.path.c_str(), basename(newfile.path).c_str());
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=move&"
              "access_token=%s&"
              "from=%s&"
-             "to=%s"
-             , Access_Token, URLEncode(oldfullpath).c_str(), URLEncode(newfullpath).c_str());
+             "to=%s",
+             Access_Token,
+             URLEncode(pathjoin(basepath, oldat.path, basename(file.path))).c_str(),
+             URLEncode(pathjoin(basepath, newat.path, basename(newfile.path))).c_str());
 
     Http *r = Httpinit(buff);
     r->method = Httprequest::get;

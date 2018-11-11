@@ -276,7 +276,7 @@ CURLcode request(Http *r){
     long http_code = 0;
     curl_easy_getinfo(r->curl_handle, CURLINFO_RESPONSE_CODE, &http_code);
     if(curl_code != CURLE_OK && strlen(errbuf)){
-        errorlog("libcurl error: %s\n", errbuf);
+        errorlog("libcurl error: %s [%d]\n", errbuf, curl_code);
     }
     if(curl_code == CURLE_OK && (http_code >= 300 || http_code < 200)){
         return http_code;
