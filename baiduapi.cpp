@@ -637,26 +637,34 @@ int fm_delete(const filekey& file) {
     return 0;
 }
 
+static void replaceAll(std::string &s, const std::string &search, const std::string &replace ){
+    for(size_t pos = 0; ; pos += replace.length()) {
+        // Locate the substring to replace
+        pos = s.find( search, pos);
+        if( pos == std::string::npos) break;
+        // Replace by erasing and inserting
+        s.erase(pos, search.length());
+        s.insert(pos, replace);
+    }
+}
 
 int fm_batchdelete(std::vector<struct filekey> flist){
-retry:
     char buff[2048];
     snprintf(buff, sizeof(buff) - 1,
              "https://pcs.baidu.com/rest/2.0/pcs/file?"
              "method=delete&"
-             "access_token=%s&" , Access_Token);
+             "access_token=%s" , Access_Token);
+retry:
     std::string param = "param=";
     json_object *jobj = json_object_new_object();
     json_object *jarray = json_object_new_array();
 
     for(auto i =  flist.begin(); i != flist.end();) {
         json_object *jpath = json_object_new_object();
-        char path[PATHLEN];
-        sprintf(path, "%s/%s", basepath, i->path.c_str());
-        json_object_object_add(jpath, "path", json_object_new_string(path));
+        json_object_object_add(jpath, "path", json_object_new_string(pathjoin(basepath, i->path).c_str()));
         json_object_array_add(jarray, jpath);
         i = flist.erase(i);
-        if(json_object_array_length(jarray) == 200){
+        if(json_object_array_length(jarray) == 100){
             break;
         }
     }
@@ -664,6 +672,7 @@ retry:
     param += json_object_to_json_string(jobj);
     json_object_put(jobj);
 
+    replaceAll(param, "+", "\\u002b");
     buffstruct read_bs(param.data(), (size_t)param.size());
     Http *r = Httpinit(buff);
     r->method = Httprequest::post_x_www_form_urlencoded;
@@ -682,7 +691,6 @@ retry:
     }
     return 0;
 }
-
 
 /* 想猜你就继续猜吧
  */
@@ -709,6 +717,10 @@ int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, f
     ERROR_CHECK(ret);
     newfile.private_key = file.private_key;
     return 0;
+}
+
+int fm_utime(const filekey& , const struct timespec[2]){
+    return -EACCES;
 }
 
 std::shared_ptr<void> fm_get_private_key(const char* private_key_str){
