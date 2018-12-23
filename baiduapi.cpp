@@ -33,7 +33,8 @@ static int handleerror(const char* file, const char *msg, size_t len) {
     json_object *json_get = json_tokener_parse(msg);
     if (json_get == NULL) {
         errorlog("json_tokener_parse failed!\n");
-        return -EPROTO;
+        errno = EAGAIN;
+        return -errno;
     }
 
     int error = 0;
@@ -106,13 +107,12 @@ static int handleerror(const char* file, const char *msg, size_t len) {
     case 31212:
     case 31233:
     case 31243:
+    case 31295:
     case 31296:
     case 31299:
+    case 31326:
     case 31811:
         errno = ETIMEDOUT;
-        break;
-    case 31326:
-        errno = ETOOMANYREFS;
         break;
 
     default:
