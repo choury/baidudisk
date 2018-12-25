@@ -1,3 +1,3 @@
 [submodule "fmdisk"]
 	path = fmdisk
-	url = git://github.com/choury/fmdisk.git
+	url = https://github.com/choury/fmdisk.git

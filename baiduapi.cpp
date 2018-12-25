@@ -96,6 +96,7 @@ static int handleerror(const char* file, const char *msg, size_t len) {
         break;
         
     case 31200:
+    case 31326:
         errno = EBUSY;
         break;
 
@@ -110,7 +111,6 @@ static int handleerror(const char* file, const char *msg, size_t len) {
     case 31295:
     case 31296:
     case 31299:
-    case 31326:
     case 31811:
         errno = ETIMEDOUT;
         break;
