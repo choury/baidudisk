@@ -386,6 +386,8 @@ static int baiduapi_list(const filekey& file, off_t offset, size_t limit, std::v
     for (int i = 0; i < json_object_array_length(jlist); ++i) {
         json_object *filenode = json_object_array_get_idx(jlist, i);
         struct filemeta meta;
+        meta.flags = 0;
+        meta.inline_data = nullptr;
         json_object *jpath;
         ret = json_object_object_get_ex(filenode, "path", &jpath);
         assert(ret);
@@ -421,7 +423,6 @@ static int baiduapi_list(const filekey& file, off_t offset, size_t limit, std::v
         } else {
             meta.mode = S_IFREG | 0444;
         }
-        meta.flags = 0;
         flist.push_back(meta);
     }
     json_object_put(json_get);
@@ -709,14 +710,11 @@ int fm_utime(const filekey& , const struct timespec[2]){
 }
 
 std::shared_ptr<void> fm_get_private_key(const char* private_key_str){
-    return std::shared_ptr<void>((void*)(long)atoi(private_key_str), [](void*){});
+    return std::shared_ptr<void>((void*)(uint64_t)atoll(private_key_str), [](void*){});
 }
 
 std::string fm_private_key_tostring(std::shared_ptr<void> private_key){
-    return std::to_string((long)private_key.get());
-}
-
-void fm_release_private_key(void*){
+    return std::to_string((uint64_t)private_key.get());
 }
 
 const char* fm_getsecret(){
