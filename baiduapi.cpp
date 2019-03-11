@@ -624,17 +624,6 @@ int fm_delete(const filekey& file) {
     return 0;
 }
 
-static void replaceAll(std::string &s, const std::string &search, const std::string &replace ){
-    for(size_t pos = 0; ; pos += replace.length()) {
-        // Locate the substring to replace
-        pos = s.find( search, pos);
-        if( pos == std::string::npos) break;
-        // Replace by erasing and inserting
-        s.erase(pos, search.length());
-        s.insert(pos, replace);
-    }
-}
-
 int fm_batchdelete(std::vector<struct filekey> flist){
     char buff[2048];
     snprintf(buff, sizeof(buff) - 1,
@@ -659,8 +648,8 @@ retry:
     param += json_object_to_json_string(jobj);
     json_object_put(jobj);
 
-    replaceAll(param, "+", "\\u002b");
-    replaceAll(param, "&", "\\u0026");
+    param = replaceAll(param, "+", "\\u002b");
+    param = replaceAll(param, "&", "\\u0026");
     buffstruct read_bs(param.data(), (size_t)param.size());
     Http *r = Httpinit(buff);
     r->method = Httprequest::post_x_www_form_urlencoded;
