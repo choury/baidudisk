@@ -71,6 +71,7 @@ static int handleerror(const char* file, const char *msg, size_t len) {
         errno = EINVAL;
         break;
 
+    case 10057:
     case 31034:
     case 31045:
         errno = EAGAIN;
@@ -107,6 +108,7 @@ static int handleerror(const char* file, const char *msg, size_t len) {
 
     case 31212:
     case 31233:
+    case 31241:
     case 31243:
     case 31295:
     case 31296:
@@ -117,7 +119,7 @@ static int handleerror(const char* file, const char *msg, size_t len) {
 
     default:
         errorlog("No defined errno:%d\n", error);
-        errno = EPROTO;
+        errno = EAGAIN;
         break;
     }
 
